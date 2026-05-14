@@ -11,6 +11,7 @@ export default defineManifest({
   permissions: [
     'bookmarks',
     'storage',
+    'offscreen',
   ],
   host_permissions: [
     'https://*.supabase.co/*',

@@ -19,10 +19,8 @@ export async function findSyncFolder() {
   const folder = results.find((r) => !r.url)
   if (folder) return folder
 
-  const [tree] = await chrome.bookmarks.getTree()
-  const otherBookmarks = tree.children.find((c) => c.title === 'Other bookmarks')
   return chrome.bookmarks.create({
-    parentId: otherBookmarks.id,
+    parentId: '1',
     title: '[SyncBookmarks]',
   })
 }

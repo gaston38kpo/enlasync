@@ -8,9 +8,9 @@ vi.mock('@/background/supabase.js', () => ({
 }))
 
 vi.mock('@/background/bookmarks.js', () => ({
-  findSyncFolder: vi.fn().mockResolvedValue({ id: 'sync1', title: '[SyncBookmarks]' }),
+  findSyncFolder: vi.fn().mockResolvedValue({ id: 'sync1', title: 'abc' }),
   applyDiff: vi.fn().mockResolvedValue(undefined),
-  serializeTree: vi.fn().mockResolvedValue({ title: '[SyncBookmarks]', children: [] }),
+  serializeTree: vi.fn().mockResolvedValue({ title: 'abc', children: [] }),
 }))
 
 import { init, onLocalChange } from '@/background/service-worker.js'
@@ -39,6 +39,25 @@ describe('service-worker', () => {
     expect(createSupabaseClient).toHaveBeenCalled()
   })
 
+  it('init with syncKey calls findSyncFolder and fetchTree', async () => {
+    const { fetchTree } = await import('@/background/supabase.js')
+    chrome.storage.local.get = vi.fn().mockResolvedValue({ sync_key: 'my-key', deviceId: 'dev1' })
+    fetchTree.mockResolvedValueOnce({ title: 'my-key', children: [] })
+
+    await init()
+
+    expect(findSyncFolder).toHaveBeenCalledWith('my-key')
+    expect(fetchTree).toHaveBeenCalled()
+  })
+
+  it('init without syncKey does not call findSyncFolder', async () => {
+    chrome.storage.local.get = vi.fn().mockResolvedValue({ sync_key: '', deviceId: 'dev1' })
+
+    await init()
+
+    expect(findSyncFolder).not.toHaveBeenCalled()
+  })
+
   it('onLocalChange debounces 200ms then calls pushTree when not applying remote', async () => {
     chrome.storage.local.get = vi.fn().mockResolvedValue({ sync_key: 'abc', deviceId: 'dev1' })
     await init()
@@ -48,7 +67,7 @@ describe('service-worker', () => {
 
     await vi.advanceTimersByTimeAsync(200)
 
-    expect(findSyncFolder).toHaveBeenCalled()
+    expect(findSyncFolder).toHaveBeenCalledWith('abc')
     expect(serializeTree).toHaveBeenCalledWith('sync1')
     expect(pushTree).toHaveBeenCalled()
   })

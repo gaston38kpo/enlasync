@@ -32,14 +32,13 @@ async function doInit() {
     await chrome.storage.local.set({ deviceId })
   }
   supabase = createSupabaseClient()
-  await findSyncFolder()
   await setupOffscreen()
 
   if (syncKey) {
     const remoteTree = await fetchTree(supabase, syncKey)
     if (remoteTree) {
       isApplyingRemote = true
-      const folder = await findSyncFolder()
+      const folder = await findSyncFolder(syncKey)
       await applyDiff(folder.id, remoteTree.children || [])
       isApplyingRemote = false
     }
@@ -52,7 +51,7 @@ export function onLocalChange() {
   if (debounceTimer) clearTimeout(debounceTimer)
   debounceTimer = setTimeout(async () => {
     if (!supabase) await init()
-    const folder = await findSyncFolder()
+    const folder = await findSyncFolder(syncKey)
     const tree = await serializeTree(folder.id)
     await pushTree(supabase, syncKey, deviceId, tree)
   }, 200)
@@ -64,8 +63,9 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 
   if (message.type === 'remote-change') {
+    if (!syncKey) return
     isApplyingRemote = true
-    findSyncFolder()
+    findSyncFolder(syncKey)
       .then((folder) => applyDiff(folder.id, message.tree.children || []))
       .then(() => { isApplyingRemote = false })
       .catch((err) => {

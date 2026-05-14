@@ -43,30 +43,48 @@ describe('findSyncFolder', () => {
   it('returns the [SyncBookmarks] folder when it exists', async () => {
     const folderNode = { id: '99', title: '[SyncBookmarks]', dateAdded: 12345, children: [] }
     chrome.bookmarks.search = vi.fn().mockResolvedValue([folderNode])
+    const existingSub = { id: '100', title: 'my-key', dateAdded: 12345 }
+    chrome.bookmarks.getChildren = vi.fn().mockResolvedValue([existingSub])
 
-    const result = await findSyncFolder()
-    expect(result).toEqual(folderNode)
+    const result = await findSyncFolder('my-key')
+    expect(result).toEqual(existingSub)
     expect(chrome.bookmarks.search).toHaveBeenCalledWith({ title: '[SyncBookmarks]' })
   })
 
-  it('creates the [SyncBookmarks] folder under Other Bookmarks when not found', async () => {
-    chrome.bookmarks.search = vi.fn().mockResolvedValue([])
-    chrome.bookmarks.getTree = vi.fn().mockResolvedValue([
-      {
-        children: [
-          { id: '1', title: 'Bookmarks bar', children: [] },
-          { id: '2', title: 'Other bookmarks', children: [] },
-        ],
-      },
-    ])
-    chrome.bookmarks.create = vi.fn().mockResolvedValue({ id: '100', title: '[SyncBookmarks]' })
+  it('creates the [SyncBookmarks] root and a sync-key subfolder when not found', async () => {
+    const rootFolder = { id: '1', title: '[SyncBookmarks]', dateAdded: 12345 }
 
-    const result = await findSyncFolder()
+    // No root found in search, no child folder found
+    chrome.bookmarks.search = vi.fn().mockResolvedValue([])
+    chrome.bookmarks.create = vi.fn()
+      .mockResolvedValueOnce(rootFolder)                                              // create root
+      .mockResolvedValueOnce({ id: '100', title: 'my-key' })                          // create subfolder
+    chrome.bookmarks.getChildren = vi.fn().mockResolvedValue([])                      // no children yet
+
+    const result = await findSyncFolder('my-key')
+
     expect(chrome.bookmarks.create).toHaveBeenCalledWith({
       parentId: '1',
       title: '[SyncBookmarks]',
     })
-    expect(result).toEqual({ id: '100', title: '[SyncBookmarks]' })
+    expect(chrome.bookmarks.create).toHaveBeenCalledWith({
+      parentId: rootFolder.id,
+      title: 'my-key',
+    })
+    expect(result).toEqual({ id: '100', title: 'my-key' })
+  })
+
+  it('returns existing sync-key subfolder under [SyncBookmarks]', async () => {
+    const rootFolder = { id: '10', title: '[SyncBookmarks]', dateAdded: 12345 }
+    const existingSub = { id: '20', title: 'my-key', dateAdded: 12345 }
+
+    chrome.bookmarks.search = vi.fn().mockResolvedValue([rootFolder])
+    chrome.bookmarks.getChildren = vi.fn().mockResolvedValue([existingSub])
+
+    const result = await findSyncFolder('my-key')
+
+    expect(result).toEqual(existingSub)
+    expect(chrome.bookmarks.create).not.toHaveBeenCalled()
   })
 })
 

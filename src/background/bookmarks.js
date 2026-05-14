@@ -14,14 +14,25 @@ function serializeNode(node) {
   return result
 }
 
-export async function findSyncFolder() {
-  const results = await chrome.bookmarks.search({ title: '[SyncBookmarks]' })
+const ROOT_TITLE = '[SyncBookmarks]'
+
+async function ensureRootFolder() {
+  const results = await chrome.bookmarks.search({ title: ROOT_TITLE })
   const folder = results.find((r) => !r.url)
   if (folder) return folder
 
+  return chrome.bookmarks.create({ parentId: '1', title: ROOT_TITLE })
+}
+
+export async function findSyncFolder(syncKey) {
+  const root = await ensureRootFolder()
+  const children = await chrome.bookmarks.getChildren(root.id)
+  const existing = children.find((c) => !c.url && c.title === syncKey)
+  if (existing) return existing
+
   return chrome.bookmarks.create({
-    parentId: '1',
-    title: '[SyncBookmarks]',
+    parentId: root.id,
+    title: syncKey,
   })
 }
 

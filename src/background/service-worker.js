@@ -6,6 +6,7 @@ let supabase = null
 let syncKey = ''
 let deviceId = ''
 let debounceTimer = null
+let initPromise = null
 
 async function setupOffscreen() {
   if (await chrome.offscreen.hasDocument()) return
@@ -17,6 +18,13 @@ async function setupOffscreen() {
 }
 
 export async function init() {
+  if (!initPromise) {
+    initPromise = doInit().finally(() => { initPromise = null })
+  }
+  return initPromise
+}
+
+async function doInit() {
   const stored = await chrome.storage.local.get(['sync_key', 'deviceId'])
   syncKey = stored.sync_key || ''
   deviceId = stored.deviceId || crypto.randomUUID()
@@ -40,6 +48,7 @@ export async function init() {
 
 export function onLocalChange() {
   if (isApplyingRemote) return
+  if (!syncKey) return
   if (debounceTimer) clearTimeout(debounceTimer)
   debounceTimer = setTimeout(async () => {
     if (!supabase) await init()
@@ -68,7 +77,6 @@ chrome.runtime.onMessage.addListener((message) => {
 
 chrome.runtime.onStartup.addListener(init)
 chrome.runtime.onInstalled.addListener(init)
-init()
 
 chrome.bookmarks.onCreated.addListener(onLocalChange)
 chrome.bookmarks.onRemoved.addListener(onLocalChange)

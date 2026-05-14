@@ -63,7 +63,7 @@ describe('findSyncFolder', () => {
 
     const result = await findSyncFolder()
     expect(chrome.bookmarks.create).toHaveBeenCalledWith({
-      parentId: '2',
+      parentId: '1',
       title: '[SyncBookmarks]',
     })
     expect(result).toEqual({ id: '100', title: '[SyncBookmarks]' })

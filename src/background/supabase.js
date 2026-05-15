@@ -29,6 +29,10 @@ export async function fetchTree(supabase, syncKey) {
   return data?.tree ?? null
 }
 
+export function removeChannel(supabase, channel) {
+  return supabase.removeChannel(channel)
+}
+
 export function subscribeToRemote(supabase, syncKey, deviceId, onRemoteTree) {
   supabase
     .channel('bookmark_syncs_changes')

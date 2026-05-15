@@ -1,3 +1,23 @@
+export const ROOT_TITLE = '[SyncBookmarks]'
+
+export async function findKeyForNode(nodeId) {
+  let currentId = nodeId
+
+  while (true) {
+    const [node] = await chrome.bookmarks.get(currentId)
+
+    if (!node.parentId || node.parentId === '0') return null
+
+    const [parent] = await chrome.bookmarks.get(node.parentId)
+
+    if (parent.title === ROOT_TITLE && !parent.url) {
+      return node.title
+    }
+
+    currentId = node.parentId
+  }
+}
+
 export async function serializeTree(nodeId) {
   const [node] = await chrome.bookmarks.getSubTree(nodeId)
   return serializeNode(node)
@@ -13,8 +33,6 @@ function serializeNode(node) {
   }
   return result
 }
-
-const ROOT_TITLE = '[SyncBookmarks]'
 
 async function ensureRootFolder() {
   const results = await chrome.bookmarks.search({ title: ROOT_TITLE })

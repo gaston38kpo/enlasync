@@ -1,12 +1,31 @@
 import { createSupabaseClient, pushTree, fetchTree } from './supabase.js'
-import { findSyncFolder, applyDiff, serializeTree } from './bookmarks.js'
+import { findSyncFolder, findKeyForNode, applyDiff, serializeTree } from './bookmarks.js'
 
 export let isApplyingRemote = false
 let supabase = null
-let syncKey = ''
 let deviceId = ''
-let debounceTimer = null
 let initPromise = null
+
+/** @type {Map<string, { debounceTimer: ReturnType<typeof setTimeout>|null, isApplyingRemote: boolean, folderId: string|null }>} */
+const keyStates = new Map()
+
+export function normalizeSyncKeys(keys) {
+  if (!Array.isArray(keys)) return []
+  return [...new Set(keys.map((k) => (typeof k === 'string' ? k.trim() : '')).filter(Boolean))]
+}
+
+export async function readSyncKeys() {
+  const stored = await chrome.storage.local.get(['sync_keys', 'sync_key'])
+  if (stored.sync_keys && Array.isArray(stored.sync_keys)) {
+    return normalizeSyncKeys(stored.sync_keys)
+  }
+  if (stored.sync_key && typeof stored.sync_key === 'string' && stored.sync_key.trim()) {
+    const migrated = [stored.sync_key.trim()]
+    await chrome.storage.local.set({ sync_keys: migrated })
+    return migrated
+  }
+  return []
+}
 
 async function setupOffscreen() {
   if (await chrome.offscreen.hasDocument()) return
@@ -25,60 +44,178 @@ export async function init() {
 }
 
 async function doInit() {
-  const stored = await chrome.storage.local.get(['sync_key', 'deviceId'])
-  syncKey = stored.sync_key || ''
+  const stored = await chrome.storage.local.get(['sync_keys', 'sync_key', 'deviceId'])
   deviceId = stored.deviceId || crypto.randomUUID()
   if (!stored.deviceId) {
     await chrome.storage.local.set({ deviceId })
   }
+
+  // Determine sync keys (with migration from legacy sync_key)
+  let syncKeys = normalizeSyncKeys(stored.sync_keys)
+  if (syncKeys.length === 0 && stored.sync_key && typeof stored.sync_key === 'string' && stored.sync_key.trim()) {
+    syncKeys = [stored.sync_key.trim()]
+    await chrome.storage.local.set({ sync_keys: syncKeys })
+  }
+
   supabase = createSupabaseClient()
   await setupOffscreen()
 
-  if (syncKey) {
-    const remoteTree = await fetchTree(supabase, syncKey)
+  // Clear old state and build fresh
+  keyStates.clear()
+
+  for (const key of syncKeys) {
+    keyStates.set(key, {
+      debounceTimer: null,
+      isApplyingRemote: false,
+      folderId: null,
+    })
+
+    const remoteTree = await fetchTree(supabase, key)
     if (remoteTree) {
-      isApplyingRemote = true
-      const folder = await findSyncFolder(syncKey)
+      keyStates.get(key).isApplyingRemote = true
+      const folder = await findSyncFolder(key)
+      keyStates.get(key).folderId = folder.id
       await applyDiff(folder.id, remoteTree.children || [])
-      isApplyingRemote = false
+      keyStates.get(key).isApplyingRemote = false
+    } else {
+      const folder = await findSyncFolder(key)
+      keyStates.get(key).folderId = folder.id
     }
   }
+
+  // Send full key-set config to offscreen
+  chrome.runtime.sendMessage({ type: 'offscreen-config', syncKeys, deviceId })
 }
 
-export function onLocalChange() {
-  if (isApplyingRemote) return
-  if (!syncKey) return
-  if (debounceTimer) clearTimeout(debounceTimer)
-  debounceTimer = setTimeout(async () => {
+function debouncePush(syncKey) {
+  const state = keyStates.get(syncKey)
+  if (!state || state.isApplyingRemote) return
+  if (state.debounceTimer) clearTimeout(state.debounceTimer)
+
+  state.debounceTimer = setTimeout(async () => {
     if (!supabase) await init()
     const folder = await findSyncFolder(syncKey)
+    state.folderId = folder.id
     const tree = await serializeTree(folder.id)
     await pushTree(supabase, syncKey, deviceId, tree)
+    state.debounceTimer = null
   }, 200)
 }
 
-chrome.runtime.onMessage.addListener((message) => {
+async function getAffectedKey(parentId) {
+  const key = await findKeyForNode(parentId)
+  if (key && keyStates.has(key)) return key
+  return null
+}
+
+export function onBookmarkCreated(_id, bookmark) {
+  if (!bookmark || !bookmark.parentId) return
+  getAffectedKey(bookmark.parentId).then((key) => {
+    if (key) debouncePush(key)
+  })
+}
+
+export function onBookmarkRemoved(_id, removeInfo) {
+  if (!removeInfo || !removeInfo.parentId) return
+  getAffectedKey(removeInfo.parentId).then((key) => {
+    if (key) debouncePush(key)
+  })
+}
+
+export function onBookmarkChanged(id, _changeInfo) {
+  chrome.bookmarks.get(id).then(([node]) => {
+    if (!node || !node.parentId) return
+    getAffectedKey(node.parentId).then((key) => {
+      if (key) debouncePush(key)
+    })
+  })
+}
+
+export function onBookmarkMoved(_id, moveInfo) {
+  if (!moveInfo) return
+  const promises = []
+  if (moveInfo.parentId) {
+    promises.push(getAffectedKey(moveInfo.parentId))
+  }
+  if (moveInfo.oldParentId && moveInfo.oldParentId !== moveInfo.parentId) {
+    promises.push(getAffectedKey(moveInfo.oldParentId))
+  }
+  Promise.all(promises).then((keys) => {
+    const unique = new Set(keys.filter(Boolean))
+    for (const key of unique) {
+      debouncePush(key)
+    }
+  })
+}
+
+async function forceSync(syncKey) {
+  const state = keyStates.get(syncKey)
+  if (!state) return false
+  if (!supabase) await init()
+
+  const remoteTree = await fetchTree(supabase, syncKey)
+  if (remoteTree) {
+    state.isApplyingRemote = true
+    const folder = await findSyncFolder(syncKey)
+    state.folderId = folder.id
+    await applyDiff(folder.id, remoteTree.children || [])
+    state.isApplyingRemote = false
+  }
+
+  const folder = await findSyncFolder(syncKey)
+  state.folderId = folder.id
+  const tree = await serializeTree(folder.id)
+  await pushTree(supabase, syncKey, deviceId, tree)
+  return true
+}
+
+async function forceSyncAll() {
+  const results = []
+  for (const key of keyStates.keys()) {
+    results.push(forceSync(key))
+  }
+  return Promise.all(results)
+}
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'offscreen-ready') {
-    chrome.runtime.sendMessage({ type: 'offscreen-init', syncKey, deviceId })
+    // Re-send config with current keys
+    const syncKeys = [...keyStates.keys()]
+    chrome.runtime.sendMessage({ type: 'offscreen-config', syncKeys, deviceId })
   }
 
   if (message.type === 'remote-change') {
-    if (!syncKey) return
-    isApplyingRemote = true
-    findSyncFolder(syncKey)
-      .then((folder) => applyDiff(folder.id, message.tree.children || []))
-      .then(() => { isApplyingRemote = false })
+    const { syncKey: remoteKey, tree } = message
+    if (!remoteKey || !keyStates.has(remoteKey)) return
+    const state = keyStates.get(remoteKey)
+    state.isApplyingRemote = true
+    findSyncFolder(remoteKey)
+      .then((folder) => {
+        state.folderId = folder.id
+        return applyDiff(folder.id, tree.children || [])
+      })
+      .then(() => { state.isApplyingRemote = false })
       .catch((err) => {
         console.error('[enlasync] remote-change error:', err)
-        isApplyingRemote = false
+        state.isApplyingRemote = false
       })
+  }
+
+  if (message.type === 'force-sync') {
+    const key = message.syncKey
+    if (key) {
+      forceSync(key).then(sendResponse).catch(() => sendResponse(false))
+    } else {
+      forceSyncAll().then(() => sendResponse(true)).catch(() => sendResponse(false))
+    }
+    return true
   }
 })
 
 chrome.runtime.onStartup.addListener(init)
 chrome.runtime.onInstalled.addListener(init)
 
-chrome.bookmarks.onCreated.addListener(onLocalChange)
-chrome.bookmarks.onRemoved.addListener(onLocalChange)
-chrome.bookmarks.onChanged.addListener(onLocalChange)
-chrome.bookmarks.onMoved.addListener(onLocalChange)
+chrome.bookmarks.onCreated.addListener(onBookmarkCreated)
+chrome.bookmarks.onRemoved.addListener(onBookmarkRemoved)
+chrome.bookmarks.onChanged.addListener(onBookmarkChanged)
+chrome.bookmarks.onMoved.addListener(onBookmarkMoved)

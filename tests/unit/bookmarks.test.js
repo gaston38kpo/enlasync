@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { serializeTree, findSyncFolder, applyDiff } from '@/background/bookmarks.js'
+import { serializeTree, findSyncFolder, findKeyForNode, ROOT_TITLE, applyDiff } from '@/background/bookmarks.js'
+
+describe('ROOT_TITLE', () => {
+  it('exports the expected constant', () => {
+    expect(ROOT_TITLE).toBe('[SyncBookmarks]')
+  })
+})
 
 describe('serializeTree', () => {
   beforeEach(() => {
@@ -54,12 +60,11 @@ describe('findSyncFolder', () => {
   it('creates the [SyncBookmarks] root and a sync-key subfolder when not found', async () => {
     const rootFolder = { id: '1', title: '[SyncBookmarks]', dateAdded: 12345 }
 
-    // No root found in search, no child folder found
     chrome.bookmarks.search = vi.fn().mockResolvedValue([])
     chrome.bookmarks.create = vi.fn()
-      .mockResolvedValueOnce(rootFolder)                                              // create root
-      .mockResolvedValueOnce({ id: '100', title: 'my-key' })                          // create subfolder
-    chrome.bookmarks.getChildren = vi.fn().mockResolvedValue([])                      // no children yet
+      .mockResolvedValueOnce(rootFolder)
+      .mockResolvedValueOnce({ id: '100', title: 'my-key' })
+    chrome.bookmarks.getChildren = vi.fn().mockResolvedValue([])
 
     const result = await findSyncFolder('my-key')
 
@@ -85,6 +90,91 @@ describe('findSyncFolder', () => {
 
     expect(result).toEqual(existingSub)
     expect(chrome.bookmarks.create).not.toHaveBeenCalled()
+  })
+})
+
+describe('findKeyForNode', () => {
+  // Helper to create a mock chrome.bookmarks.get that returns nodes by ID
+  function makeMockGet(nodesById) {
+    return vi.fn().mockImplementation((id) => {
+      const node = nodesById[id]
+      return node ? Promise.resolve([node]) : Promise.reject(new Error(`Node ${id} not found`))
+    })
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('returns the sync key for a bookmark directly under a key folder', async () => {
+    // Structure: [SyncBookmarks](99) > key-a(100) > bookmark(101)
+    chrome.bookmarks.get = makeMockGet({
+      '99': { id: '99', title: '[SyncBookmarks]', parentId: '1' },
+      '100': { id: '100', title: 'key-a', parentId: '99' },
+      '101': { id: '101', title: 'MDN', url: 'https://mdn.io', parentId: '100' },
+    })
+
+    const result = await findKeyForNode('101')
+    expect(result).toBe('key-a')
+  })
+
+  it('returns the sync key for a deeply nested bookmark', async () => {
+    // Structure: [SyncBookmarks](99) > key-b(200) > folder1(201) > subfolder(202) > bookmark(203)
+    chrome.bookmarks.get = makeMockGet({
+      '99': { id: '99', title: '[SyncBookmarks]', parentId: '1' },
+      '200': { id: '200', title: 'key-b', parentId: '99' },
+      '201': { id: '201', title: 'folder1', parentId: '200' },
+      '202': { id: '202', title: 'subfolder', parentId: '201' },
+      '203': { id: '203', title: 'MDN', url: 'https://mdn.io', parentId: '202' },
+    })
+
+    const result = await findKeyForNode('203')
+    expect(result).toBe('key-b')
+  })
+
+  it('returns null for a bookmark outside any sync folder', async () => {
+    // Structure: Bookmarks bar(1) > Other Stuff(50) > bookmark(51)
+    // Bookmarks bar has parentId '0', so walking up from 51 → 50 → 1 → '0' returns null
+    chrome.bookmarks.get = makeMockGet({
+      '1': { id: '1', title: 'Bookmarks bar', parentId: '0' },
+      '50': { id: '50', title: 'Other Stuff', parentId: '1' },
+      '51': { id: '51', title: 'MDN', url: 'https://mdn.io', parentId: '50' },
+    })
+
+    const result = await findKeyForNode('51')
+    expect(result).toBeNull()
+  })
+
+  it('returns null for a node at root level', async () => {
+    chrome.bookmarks.get = makeMockGet({
+      '0': { id: '0', title: '', parentId: undefined },
+    })
+
+    const result = await findKeyForNode('0')
+    expect(result).toBeNull()
+  })
+
+  it('returns the key when the node IS a sync key folder', async () => {
+    // Structure: [SyncBookmarks](99) > key-a(100)
+    chrome.bookmarks.get = makeMockGet({
+      '99': { id: '99', title: '[SyncBookmarks]', parentId: '1' },
+      '100': { id: '100', title: 'key-a', parentId: '99' },
+    })
+
+    const result = await findKeyForNode('100')
+    expect(result).toBe('key-a')
+  })
+
+  it('returns the title for a bookmark directly in [SyncBookmarks] (no key subfolder)', async () => {
+    const rootNode = { id: '99', title: '[SyncBookmarks]', parentId: '1' }
+    chrome.bookmarks.get = makeMockGet({
+      '99': rootNode,
+      '150': { id: '150', title: 'loose', url: 'https://loose.io', parentId: '99' },
+    })
+
+    // A direct child of [SyncBookmarks] returns its own title
+    const result = await findKeyForNode('150')
+    expect(result).toBe('loose')
   })
 })
 

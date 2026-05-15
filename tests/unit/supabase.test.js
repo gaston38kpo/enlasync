@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { pushTree, createSupabaseClient, subscribeToRemote } from '@/background/supabase.js'
+import { pushTree, createSupabaseClient, subscribeToRemote, removeChannel } from '@/background/supabase.js'
 
 describe('pushTree', () => {
   let mockSupabase
@@ -29,6 +29,19 @@ describe('createSupabaseClient', () => {
     const client = createSupabaseClient()
     expect(client).toBeDefined()
     expect(typeof client.from).toBe('function')
+  })
+})
+
+describe('removeChannel', () => {
+  it('delegates to supabase removeChannel', () => {
+    const mockChannel = { name: 'test-channel' }
+    const mockSupabase = {
+      removeChannel: vi.fn().mockReturnValue(mockChannel),
+    }
+
+    removeChannel(mockSupabase, mockChannel)
+
+    expect(mockSupabase.removeChannel).toHaveBeenCalledWith(mockChannel)
   })
 })
 

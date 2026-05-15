@@ -1,17 +1,14 @@
 import { createSupabaseClient } from '../background/supabase.js'
 
 let supabase = null
-let channel = null
+/** @type {Map<string, { channel: object }>} */
+const channels = new Map()
 
-function setup(syncKey, deviceId) {
-  supabase = createSupabaseClient()
+function subscribeToKey(syncKey, deviceId) {
+  if (channels.has(syncKey)) return
 
-  if (channel) {
-    supabase.removeChannel(channel)
-  }
-
-  channel = supabase
-    .channel('bookmark_syncs_changes')
+  const channel = supabase
+    .channel(`bookmark_syncs_${syncKey}`)
     .on(
       'postgres_changes',
       {
@@ -22,20 +19,45 @@ function setup(syncKey, deviceId) {
       },
       (payload) => {
         if (payload.new?.updated_by !== deviceId) {
-          chrome.runtime.sendMessage({ type: 'remote-change', tree: payload.new.tree })
+          chrome.runtime.sendMessage({ type: 'remote-change', syncKey, tree: payload.new.tree })
         }
       }
     )
     .subscribe((status) => {
-      console.log('[enlasync] offscreen realtime status:', status)
+      console.log(`[enlasync] offscreen realtime status for ${syncKey}:`, status)
     })
+
+  channels.set(syncKey, { channel })
+}
+
+function unsubscribeFromKey(syncKey) {
+  const entry = channels.get(syncKey)
+  if (!entry) return
+  supabase.removeChannel(entry.channel)
+  channels.delete(syncKey)
+}
+
+function setup(syncKeys, deviceId) {
+  supabase = supabase || createSupabaseClient()
+
+  // Unsubscribe from keys no longer in the list
+  for (const key of channels.keys()) {
+    if (!syncKeys.includes(key)) {
+      unsubscribeFromKey(key)
+    }
+  }
+
+  // Subscribe to new keys
+  for (const key of syncKeys) {
+    subscribeToKey(key, deviceId)
+  }
 }
 
 chrome.runtime.onMessage.addListener((message) => {
-  if (message.type === 'offscreen-init') {
-    setup(message.syncKey, message.deviceId)
+  if (message.type === 'offscreen-config') {
+    setup(message.syncKeys, message.deviceId)
   }
 })
 
-// Avisarle al SW que estamos listos para recibir config
+// Let the service worker know we're ready
 chrome.runtime.sendMessage({ type: 'offscreen-ready' })

@@ -87,7 +87,11 @@ async function doInit() {
   chrome.runtime.sendMessage({ type: 'offscreen-config', syncKeys, deviceId })
 }
 
-function debouncePush(syncKey) {
+async function debouncePush(syncKey) {
+  // Service worker may have been restarted — ensure state is loaded
+  if (keyStates.size === 0) {
+    await init()
+  }
   const state = keyStates.get(syncKey)
   if (!state || state.isApplyingRemote) return
   if (state.debounceTimer) clearTimeout(state.debounceTimer)
@@ -103,6 +107,10 @@ function debouncePush(syncKey) {
 }
 
 async function getAffectedKey(parentId) {
+  // Service worker may have been restarted — ensure state is loaded
+  if (keyStates.size === 0) {
+    await init()
+  }
   const key = await findKeyForNode(parentId)
   if (key && keyStates.has(key)) return key
   return null
@@ -148,6 +156,13 @@ export function onBookmarkMoved(_id, moveInfo) {
   })
 }
 
+export function onBookmarkChildrenReordered(id, _reorderInfo) {
+  if (!id) return
+  getAffectedKey(id).then((key) => {
+    if (key) debouncePush(key)
+  })
+}
+
 async function forceSync(syncKey) {
   const state = keyStates.get(syncKey)
   if (!state) return false
@@ -179,35 +194,55 @@ async function forceSyncAll() {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'offscreen-ready') {
-    // Re-send config with current keys
-    const syncKeys = [...keyStates.keys()]
-    chrome.runtime.sendMessage({ type: 'offscreen-config', syncKeys, deviceId })
+    const handleOffscreenReady = async () => {
+      if (keyStates.size === 0) {
+        await init()
+      }
+      const syncKeys = [...keyStates.keys()]
+      chrome.runtime.sendMessage({ type: 'offscreen-config', syncKeys, deviceId })
+    }
+    handleOffscreenReady()
   }
 
   if (message.type === 'remote-change') {
     const { syncKey: remoteKey, tree } = message
-    if (!remoteKey || !keyStates.has(remoteKey)) return
-    const state = keyStates.get(remoteKey)
-    state.isApplyingRemote = true
-    findSyncFolder(remoteKey)
-      .then((folder) => {
+    if (!remoteKey) return
+
+    const handleRemoteChange = async () => {
+      if (keyStates.size === 0) {
+        await init()
+      }
+      if (!keyStates.has(remoteKey)) return
+      const state = keyStates.get(remoteKey)
+      state.isApplyingRemote = true
+      try {
+        const folder = await findSyncFolder(remoteKey)
         state.folderId = folder.id
-        return applyDiff(folder.id, tree.children || [])
-      })
-      .then(() => { state.isApplyingRemote = false })
-      .catch((err) => {
+        await applyDiff(folder.id, tree.children || [])
+      } catch (err) {
         console.error('[enlasync] remote-change error:', err)
+      } finally {
         state.isApplyingRemote = false
-      })
+      }
+    }
+    handleRemoteChange()
   }
 
   if (message.type === 'force-sync') {
-    const key = message.syncKey
-    if (key) {
-      forceSync(key).then(sendResponse).catch(() => sendResponse(false))
-    } else {
-      forceSyncAll().then(() => sendResponse(true)).catch(() => sendResponse(false))
+    const handleForceSync = async () => {
+      if (keyStates.size === 0) {
+        await init()
+      }
+      const key = message.syncKey
+      if (key) {
+        const result = await forceSync(key)
+        sendResponse(result)
+      } else {
+        await forceSyncAll()
+        sendResponse(true)
+      }
     }
+    handleForceSync().catch(() => sendResponse(false))
     return true
   }
 })
@@ -219,3 +254,4 @@ chrome.bookmarks.onCreated.addListener(onBookmarkCreated)
 chrome.bookmarks.onRemoved.addListener(onBookmarkRemoved)
 chrome.bookmarks.onChanged.addListener(onBookmarkChanged)
 chrome.bookmarks.onMoved.addListener(onBookmarkMoved)
+chrome.bookmarks.onChildrenReordered.addListener(onBookmarkChildrenReordered)

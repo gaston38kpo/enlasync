@@ -14,7 +14,7 @@ vi.mock('@/background/bookmarks.js', () => ({
   serializeTree: vi.fn().mockResolvedValue({ title: 'abc', children: [] }),
 }))
 
-import { init, normalizeSyncKeys, onBookmarkCreated, onBookmarkRemoved, onBookmarkChanged, onBookmarkMoved } from '@/background/service-worker.js'
+import { init, normalizeSyncKeys, onBookmarkCreated, onBookmarkRemoved, onBookmarkChanged, onBookmarkMoved, onBookmarkChildrenReordered } from '@/background/service-worker.js'
 import { pushTree, fetchTree, createSupabaseClient } from '@/background/supabase.js'
 import { findSyncFolder, findKeyForNode, serializeTree } from '@/background/bookmarks.js'
 
@@ -200,5 +200,62 @@ describe('service-worker', () => {
 
     await vi.advanceTimersByTimeAsync(200)
     expect(pushTree).not.toHaveBeenCalled()
+  })
+
+  it('onBookmarkChildrenReordered triggers debounce push for affected key', async () => {
+    chrome.storage.local.get = vi.fn().mockResolvedValue({
+      sync_keys: ['key-a'],
+      deviceId: 'dev1',
+    })
+    findSyncFolder.mockResolvedValue({ id: 'sync-a', title: 'key-a' })
+    findKeyForNode.mockResolvedValue('key-a')
+
+    await init()
+    onBookmarkChildrenReordered('sync-a', { childIds: ['b1', 'b2'] })
+
+    expect(pushTree).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(200)
+
+    expect(findSyncFolder).toHaveBeenCalledWith('key-a')
+    expect(pushTree).toHaveBeenCalled()
+  })
+
+  it('onBookmarkChildrenReordered ignores events outside sync folders', async () => {
+    chrome.storage.local.get = vi.fn().mockResolvedValue({
+      sync_keys: ['key-a'],
+      deviceId: 'dev1',
+    })
+    findSyncFolder.mockResolvedValue({ id: 'sync-a', title: 'key-a' })
+    findKeyForNode.mockResolvedValue(null)
+
+    await init()
+    onBookmarkChildrenReordered('outside-folder', { childIds: ['b1'] })
+
+    await vi.advanceTimersByTimeAsync(200)
+
+    expect(pushTree).not.toHaveBeenCalled()
+  })
+
+  it('auto-initializes on bookmark event after service worker restart', async () => {
+    // Simulate a service worker restart by clearing keyStates via init with no keys
+    chrome.storage.local.get = vi.fn().mockResolvedValue({ deviceId: 'dev1' })
+    await init()
+
+    // Now set up for the actual test — storage has sync keys
+    chrome.storage.local.get = vi.fn().mockResolvedValue({
+      sync_keys: ['key-a'],
+      deviceId: 'dev1',
+    })
+    findSyncFolder.mockResolvedValue({ id: 'sync-a', title: 'key-a' })
+    findKeyForNode.mockResolvedValue('key-a')
+
+    // DO NOT call init() — simulate service worker restart with empty keyStates
+    onBookmarkCreated('b1', { id: 'b1', parentId: 'sync-a' })
+
+    // Wait for auto-init + debounce
+    await vi.advanceTimersByTimeAsync(500)
+
+    expect(pushTree).toHaveBeenCalled()
   })
 })

@@ -55,6 +55,7 @@ async function doInit() {
   if (syncKeys.length === 0 && stored.sync_key && typeof stored.sync_key === 'string' && stored.sync_key.trim()) {
     syncKeys = [stored.sync_key.trim()]
     await chrome.storage.local.set({ sync_keys: syncKeys })
+    await chrome.storage.local.remove('sync_key')
   }
 
   supabase = createSupabaseClient()

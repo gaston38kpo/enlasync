@@ -4,6 +4,7 @@ import './App.css'
 export async function saveSyncKeys(keys) {
   const normalized = keys.filter(Boolean).map((k) => k.trim()).filter(Boolean)
   await chrome.storage.local.set({ sync_keys: [...new Set(normalized)] })
+  await chrome.storage.local.remove('sync_key')
   chrome.runtime.reload()
 }
 

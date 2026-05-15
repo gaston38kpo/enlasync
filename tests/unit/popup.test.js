@@ -5,6 +5,7 @@ describe('saveSyncKeys', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     chrome.storage.local.set = vi.fn().mockResolvedValue(undefined)
+    chrome.storage.local.remove = vi.fn().mockResolvedValue(undefined)
     chrome.runtime.reload = vi.fn()
   })
 
@@ -12,6 +13,7 @@ describe('saveSyncKeys', () => {
     await saveSyncKeys(['key-a', 'key-b'])
 
     expect(chrome.storage.local.set).toHaveBeenCalledWith({ sync_keys: ['key-a', 'key-b'] })
+    expect(chrome.storage.local.remove).toHaveBeenCalledWith('sync_key')
     expect(chrome.runtime.reload).toHaveBeenCalled()
   })
 

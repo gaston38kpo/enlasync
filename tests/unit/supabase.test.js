@@ -1,5 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { pushTree, createSupabaseClient, subscribeToRemote, removeChannel } from '@/background/supabase.js'
+
+vi.mock('@/background/crypto.js', () => ({
+  encrypt: vi.fn(async (_tree, syncKey) => ({
+    v: 1,
+    salt: 'mock-salt',
+    iv: 'mock-iv',
+    ct: `encrypted-with-${syncKey}`,
+  })),
+  safeDecrypt: vi.fn(async (value, syncKey) => {
+    if (value === null || value === undefined) return null
+    if (value.v === 1) return { decrypted: true, original: value.ct }
+    return value
+  }),
+}))
+
+import { pushTree, fetchTree, createSupabaseClient, subscribeToRemote, removeChannel } from '@/background/supabase.js'
+import { encrypt, safeDecrypt } from '@/background/crypto.js'
 
 describe('pushTree', () => {
   let mockSupabase
@@ -9,18 +25,87 @@ describe('pushTree', () => {
       from: vi.fn().mockReturnThis(),
       upsert: vi.fn().mockResolvedValue({ data: null, error: null }),
     }
+    vi.clearAllMocks()
   })
 
-  it('calls supabase upsert with correct payload shape', async () => {
+  it('encrypts tree before upsert', async () => {
     const tree = { title: '[SyncBookmarks]', children: [{ title: 'MDN', url: 'https://mdn.io' }] }
     await pushTree(mockSupabase, 'abc', 'dev1', tree)
 
+    expect(encrypt).toHaveBeenCalledWith(tree, 'abc')
     expect(mockSupabase.from).toHaveBeenCalledWith('bookmark_syncs')
     expect(mockSupabase.upsert).toHaveBeenCalledWith({
       sync_key: 'abc',
-      tree,
+      tree: {
+        v: 1,
+        salt: 'mock-salt',
+        iv: 'mock-iv',
+        ct: 'encrypted-with-abc',
+      },
       updated_by: 'dev1',
     })
+  })
+
+  it('logs error when supabase upsert fails', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mockSupabase.upsert.mockResolvedValue({ data: null, error: { message: 'upsert failed' } })
+
+    const tree = { title: 'T', children: [] }
+    await pushTree(mockSupabase, 'abc', 'dev1', tree)
+
+    expect(consoleSpy).toHaveBeenCalledWith('[enlasync] pushTree error:', { message: 'upsert failed' })
+    consoleSpy.mockRestore()
+  })
+})
+
+describe('fetchTree', () => {
+  let mockSupabase
+
+  beforeEach(() => {
+    mockSupabase = {
+      from: vi.fn().mockReturnThis(),
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      single: vi.fn(),
+    }
+    vi.clearAllMocks()
+  })
+
+  it('decrypts encrypted tree', async () => {
+    const encryptedTree = { v: 1, salt: 's', iv: 'i', ct: 'c' }
+    mockSupabase.single.mockResolvedValue({ data: { tree: encryptedTree }, error: null })
+
+    const result = await fetchTree(mockSupabase, 'key1')
+
+    expect(safeDecrypt).toHaveBeenCalledWith(encryptedTree, 'key1')
+    expect(result).toEqual({ decrypted: true, original: 'c' })
+  })
+
+  it('returns null when supabase returns null', async () => {
+    mockSupabase.single.mockResolvedValue({ data: null, error: null })
+
+    const result = await fetchTree(mockSupabase, 'key1')
+
+    expect(safeDecrypt).toHaveBeenCalledWith(null, 'key1')
+    expect(result).toBeNull()
+  })
+
+  it('passes through legacy plaintext', async () => {
+    const legacyTree = { title: 'Legacy', children: [] }
+    mockSupabase.single.mockResolvedValue({ data: { tree: legacyTree }, error: null })
+
+    const result = await fetchTree(mockSupabase, 'key1')
+
+    expect(safeDecrypt).toHaveBeenCalledWith(legacyTree, 'key1')
+    expect(result).toEqual(legacyTree)
+  })
+
+  it('returns null on supabase error', async () => {
+    mockSupabase.single.mockResolvedValue({ data: null, error: { message: 'db error' } })
+
+    const result = await fetchTree(mockSupabase, 'key1')
+
+    expect(result).toBeNull()
   })
 })
 

@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
+vi.mock('@/background/crypto.js', () => ({
+  encrypt: vi.fn(),
+  decrypt: vi.fn(),
+  safeDecrypt: vi.fn(),
+}))
+
 vi.mock('@/background/supabase.js', () => ({
   createSupabaseClient: vi.fn(() => ({ from: vi.fn() })),
   pushTree: vi.fn().mockResolvedValue(undefined),

@@ -1,5 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+// Mock dependencies before any imports that use them
+vi.mock('@/background/supabase.js', () => ({
+  createSupabaseClient: vi.fn(),
+}))
+
+vi.mock('@/background/crypto.js', () => ({
+  safeDecrypt: vi.fn(async (value, syncKey) => {
+    if (value === null || value === undefined) return null
+    if (value.v === 1) return { decrypted: true, original: value.ct }
+    return value
+  }),
+}))
+
+import { createSupabaseClient } from '@/background/supabase.js'
+import { safeDecrypt } from '@/background/crypto.js'
+
 describe('offscreen multi-channel logic', () => {
   let mockSupabase
   let createdChannels
@@ -132,5 +148,106 @@ describe('offscreen multi-channel logic', () => {
     // When the callback fires, it sends chrome.runtime.sendMessage with syncKey
     // This is verified by the message format: { type: 'remote-change', syncKey, tree }
     expect(typeof capturedCallback).toBe('function')
+  })
+})
+
+describe('offscreen realtime decryption', () => {
+  let capturedCallbacks
+  let mockChannels
+  let sendMessageCalls
+  let mockSupabase
+  let messageListeners
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    capturedCallbacks = new Map()
+    mockChannels = new Map()
+    sendMessageCalls = []
+    messageListeners = []
+
+    mockSupabase = {
+      channel: vi.fn((name) => {
+        const syncKey = name.replace('bookmark_syncs_', '')
+        const channel = {
+          on: vi.fn((_event, _filter, callback) => {
+            capturedCallbacks.set(syncKey, callback)
+            return channel
+          }),
+          subscribe: vi.fn(),
+        }
+        mockChannels.set(syncKey, channel)
+        return channel
+      }),
+      removeChannel: vi.fn(),
+    }
+
+    createSupabaseClient.mockReturnValue(mockSupabase)
+
+    // Capture chrome.runtime.sendMessage calls
+    chrome.runtime.sendMessage = vi.fn((msg) => {
+      sendMessageCalls.push(msg)
+    })
+
+    // Capture message listeners so we can trigger them in tests
+    chrome.runtime.onMessage = {
+      addListener: vi.fn((fn) => messageListeners.push(fn)),
+    }
+
+    // Re-import offscreen with fresh mocked dependencies
+    vi.resetModules()
+    await import('@/offscreen/offscreen.js')
+  })
+
+  function triggerConfig(syncKeys, deviceId) {
+    const message = { type: 'offscreen-config', syncKeys, deviceId }
+    messageListeners.forEach((listener) => listener(message))
+  }
+
+  it('decrypts encrypted realtime payload before forwarding', async () => {
+    triggerConfig(['key1'], 'dev1')
+
+    const encryptedTree = { v: 1, salt: 's', iv: 'i', ct: 'c' }
+    const callback = capturedCallbacks.get('key1')
+    expect(callback).toBeDefined()
+
+    await callback({ new: { updated_by: 'dev-other', tree: encryptedTree } })
+
+    expect(safeDecrypt).toHaveBeenCalledWith(encryptedTree, 'key1')
+    const remoteChange = sendMessageCalls.find((m) => m.type === 'remote-change')
+    expect(remoteChange).toBeDefined()
+    expect(remoteChange.tree).toEqual({ decrypted: true, original: 'c' })
+  })
+
+  it('passes through legacy plaintext payload', async () => {
+    triggerConfig(['key2'], 'dev1')
+
+    const legacyTree = { title: 'Legacy', children: [] }
+    const callback = capturedCallbacks.get('key2')
+    expect(callback).toBeDefined()
+
+    await callback({ new: { updated_by: 'dev-other', tree: legacyTree } })
+
+    expect(safeDecrypt).toHaveBeenCalledWith(legacyTree, 'key2')
+    const remoteChange = sendMessageCalls.find((m) => m.type === 'remote-change')
+    expect(remoteChange).toBeDefined()
+    expect(remoteChange.tree).toEqual(legacyTree)
+  })
+
+  it('handles decrypt error gracefully', async () => {
+    safeDecrypt.mockRejectedValueOnce(new Error('bad data'))
+
+    triggerConfig(['key3'], 'dev1')
+
+    const badPayload = { v: 1, salt: 's', iv: 'i', ct: 'bad' }
+    const callback = capturedCallbacks.get('key3')
+    expect(callback).toBeDefined()
+
+    // Should not throw; error is caught and no remote-change is sent
+    await expect(
+      (async () => callback({ new: { updated_by: 'dev-other', tree: badPayload } }))()
+    ).resolves.toBeUndefined()
+
+    const remoteChange = sendMessageCalls.find((m) => m.type === 'remote-change' && m.syncKey === 'key3')
+    expect(remoteChange).toBeUndefined()
   })
 })

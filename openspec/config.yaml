@@ -1,0 +1,57 @@
+strict_tdd: true
+context: |
+  enlasync is a Node.js/TypeScript ESM, React project.
+  Detected markers: package.json, pnpm package manager.
+  Package managers: pnpm.
+  Additional evidence: Test-like files detected (9); examples: .pi\agents\sdd-spec.md, tests\smoke\test-infrastructure.test.js, tests\unit\bookmarks.test.js, tests\unit\crypto.test.js, tests\unit\manifest.test.js.
+  Primary test command: pnpm test.
+  Unit tests: Vitest (pnpm test).
+  Integration tests: none.
+  E2E tests: none.
+rules:
+  proposal:
+    require_problem_statement: true
+  spec:
+    require_acceptance_criteria: true
+  design:
+    require_tradeoffs: true
+  tasks:
+    protect_review_workload: true
+  apply:
+    test_command: "pnpm test"
+  verify:
+    test_command: "pnpm test"
+testing:
+  detected: "2026-05-17"
+  runner:
+    command: "pnpm test"
+    framework: "Vitest"
+  layers:
+    unit: "Vitest"
+    integration: ""
+    e2e: ""
+  commands:
+    unit:
+      - scope: "."
+        command: "pnpm test"
+        framework: "Vitest"
+    integration:
+      []
+    e2e:
+      []
+  coverage:
+    command: "pnpm run test:coverage"
+    commands:
+      - scope: "."
+        command: "pnpm run test:coverage"
+        framework: "coverage"
+quality:
+  lint: ""
+  lint_commands:
+    []
+  typecheck: ""
+  typecheck_commands:
+    []
+  format: ""
+  format_commands:
+    []

@@ -1,4 +1,5 @@
 import { createSupabaseClient } from '../background/supabase.js'
+import { safeDecrypt } from '../background/crypto.js'
 
 let supabase = null
 /** @type {Map<string, { channel: object }>} */
@@ -17,9 +18,14 @@ function subscribeToKey(syncKey, deviceId) {
         table: 'bookmark_syncs',
         filter: `sync_key=eq.${syncKey}`,
       },
-      (payload) => {
+      async (payload) => {
         if (payload.new?.updated_by !== deviceId) {
-          chrome.runtime.sendMessage({ type: 'remote-change', syncKey, tree: payload.new.tree })
+          try {
+            const decrypted = await safeDecrypt(payload.new.tree, syncKey)
+            chrome.runtime.sendMessage({ type: 'remote-change', syncKey, tree: decrypted })
+          } catch (err) {
+            console.error('[enlasync] offscreen decrypt error:', err)
+          }
         }
       }
     )

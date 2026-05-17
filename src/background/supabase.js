@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { encrypt, safeDecrypt } from './crypto.js'
 
 const SUPABASE_URL = 'https://ijkyywqtglavunczlsyz.supabase.co'
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlqa3l5d3F0Z2xhdnVuY3psc3l6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxOTkwOTEsImV4cCI6MjA5Mzc3NTA5MX0.vEPNgBZL3qjy3LNzq5thWA8TzYZnNB_Cr9I0dtfeexs'
@@ -8,9 +9,10 @@ export function createSupabaseClient() {
 }
 
 export async function pushTree(supabase, syncKey, deviceId, tree) {
+  const encrypted = await encrypt(tree, syncKey)
   const { error } = await supabase.from('bookmark_syncs').upsert({
     sync_key: syncKey,
-    tree,
+    tree: encrypted,
     updated_by: deviceId,
   })
   if (error) console.error('[enlasync] pushTree error:', error)
@@ -26,7 +28,8 @@ export async function fetchTree(supabase, syncKey) {
     console.error('[enlasync] fetchTree error:', error)
     return null
   }
-  return data?.tree ?? null
+  const raw = data?.tree ?? null
+  return safeDecrypt(raw, syncKey)
 }
 
 export function removeChannel(supabase, channel) {

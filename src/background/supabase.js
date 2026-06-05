@@ -15,7 +15,7 @@ export async function pushTree(supabase, syncKey, deviceId, tree) {
     tree: encrypted,
     updated_by: deviceId,
   })
-  if (error) console.error('[enlasync] pushTree error:', error)
+  if (error) throw new Error(`[enlasync] pushTree failed: ${error.message}`)
 }
 
 export async function fetchTree(supabase, syncKey) {
@@ -29,7 +29,12 @@ export async function fetchTree(supabase, syncKey) {
     return null
   }
   const raw = data?.tree ?? null
-  return safeDecrypt(raw, syncKey)
+  try {
+    return await safeDecrypt(raw, syncKey)
+  } catch (err) {
+    console.error('[enlasync] fetchTree decrypt error:', err)
+    return null
+  }
 }
 
 export function removeChannel(supabase, channel) {

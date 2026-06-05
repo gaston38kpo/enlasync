@@ -46,15 +46,12 @@ describe('pushTree', () => {
     })
   })
 
-  it('logs error when supabase upsert fails', async () => {
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+  it('throws when supabase upsert fails', async () => {
     mockSupabase.upsert.mockResolvedValue({ data: null, error: { message: 'upsert failed' } })
 
     const tree = { title: 'T', children: [] }
-    await pushTree(mockSupabase, 'abc', 'dev1', tree)
-
-    expect(consoleSpy).toHaveBeenCalledWith('[enlasync] pushTree error:', { message: 'upsert failed' })
-    consoleSpy.mockRestore()
+    await expect(pushTree(mockSupabase, 'abc', 'dev1', tree))
+      .rejects.toThrow('[enlasync] pushTree failed: upsert failed')
   })
 })
 
@@ -98,6 +95,15 @@ describe('fetchTree', () => {
 
     expect(safeDecrypt).toHaveBeenCalledWith(legacyTree, 'key1')
     expect(result).toEqual(legacyTree)
+  })
+
+  it('returns null when safeDecrypt throws', async () => {
+    mockSupabase.single.mockResolvedValue({ data: { tree: { v: 1 } }, error: null })
+    safeDecrypt.mockRejectedValue(new Error('decrypt failed'))
+
+    const result = await fetchTree(mockSupabase, 'key1')
+
+    expect(result).toBeNull()
   })
 
   it('returns null on supabase error', async () => {

@@ -20,9 +20,9 @@ vi.mock('@/background/bookmarks.js', () => ({
   serializeTree: vi.fn().mockResolvedValue({ title: 'abc', children: [] }),
 }))
 
-import { init, normalizeSyncKeys, onBookmarkCreated, onBookmarkRemoved, onBookmarkChanged, onBookmarkMoved, onBookmarkChildrenReordered } from '@/background/service-worker.js'
+import { init, normalizeSyncKeys, onBookmarkCreated, onBookmarkRemoved, onBookmarkChanged, onBookmarkMoved, onBookmarkChildrenReordered, forceSync, handleRemoteChange } from '@/background/service-worker.js'
 import { pushTree, fetchTree, createSupabaseClient } from '@/background/supabase.js'
-import { findSyncFolder, findKeyForNode, serializeTree } from '@/background/bookmarks.js'
+import { findSyncFolder, findKeyForNode, serializeTree, applyDiff } from '@/background/bookmarks.js'
 
 describe('normalizeSyncKeys', () => {
   it('deduplicates keys', () => {
@@ -254,7 +254,10 @@ describe('service-worker', () => {
       deviceId: 'dev1',
     })
     findSyncFolder.mockResolvedValue({ id: 'sync-a', title: 'key-a' })
-    findKeyForNode.mockResolvedValue('key-a')
+    findKeyForNode.mockImplementation((parentId) => {
+      if (parentId === 'sync-a') return Promise.resolve('key-a')
+      return Promise.resolve(null)
+    })
 
     // DO NOT call init() — simulate service worker restart with empty keyStates
     onBookmarkCreated('b1', { id: 'b1', parentId: 'sync-a' })
@@ -263,5 +266,103 @@ describe('service-worker', () => {
     await vi.advanceTimersByTimeAsync(500)
 
     expect(pushTree).toHaveBeenCalled()
+  })
+
+  it('resets isApplyingRemote after applyDiff throws in doInit', async () => {
+    chrome.storage.local.get = vi.fn().mockResolvedValue({
+      sync_keys: ['key-a'],
+      deviceId: 'dev1',
+    })
+    fetchTree.mockResolvedValue({ children: [] })
+    applyDiff.mockRejectedValueOnce(new Error('diff failed'))
+
+    await expect(init()).rejects.toThrow('diff failed')
+
+    // If isApplyingRemote were stuck true, debouncePush would bail out
+    applyDiff.mockResolvedValue(undefined)
+    findKeyForNode.mockResolvedValue('key-a')
+    onBookmarkCreated('b1', { id: 'b1', parentId: 'sync-a' })
+    await vi.advanceTimersByTimeAsync(200)
+
+    expect(pushTree).toHaveBeenCalled()
+  })
+
+  it('resets isApplyingRemote after applyDiff throws in forceSync', async () => {
+    chrome.storage.local.get = vi.fn().mockResolvedValue({
+      sync_keys: ['key-a'],
+      deviceId: 'dev1',
+    })
+    fetchTree.mockResolvedValue(null)
+    await init()
+
+    fetchTree.mockResolvedValue({ children: [] })
+    applyDiff.mockRejectedValueOnce(new Error('diff failed'))
+
+    await expect(forceSync('key-a')).rejects.toThrow('diff failed')
+
+    applyDiff.mockResolvedValue(undefined)
+    findKeyForNode.mockResolvedValue('key-a')
+    onBookmarkCreated('b2', { id: 'b2', parentId: 'sync-a' })
+    await vi.advanceTimersByTimeAsync(200)
+
+    expect(pushTree).toHaveBeenCalled()
+  })
+
+  it('debouncePush catches pushTree error, clears timer, and logs', async () => {
+    chrome.storage.local.get = vi.fn().mockResolvedValue({
+      sync_keys: ['key-a'],
+      deviceId: 'dev1',
+    })
+    fetchTree.mockResolvedValue(null)
+    await init()
+
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    pushTree.mockRejectedValueOnce(new Error('push failed'))
+
+    onBookmarkCreated('b1', { id: 'b1', parentId: 'sync-a' })
+    await vi.advanceTimersByTimeAsync(200)
+
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[enlasync] debouncePush error:'),
+      expect.any(Error)
+    )
+    consoleSpy.mockRestore()
+  })
+
+  it('skips invalid remote tree and resets isApplyingRemote in handleRemoteChange', async () => {
+    chrome.storage.local.get = vi.fn().mockResolvedValue({
+      sync_keys: ['key-a'],
+      deviceId: 'dev1',
+    })
+    fetchTree.mockResolvedValue(null)
+    await init()
+
+    applyDiff.mockClear()
+
+    await handleRemoteChange('key-a', null)
+
+    expect(applyDiff).not.toHaveBeenCalled()
+
+    // Verify isApplyingRemote was reset by checking debouncePush works
+    findKeyForNode.mockResolvedValue('key-a')
+    onBookmarkCreated('b1', { id: 'b1', parentId: 'sync-a' })
+    await vi.advanceTimersByTimeAsync(200)
+
+    expect(pushTree).toHaveBeenCalled()
+  })
+
+  it('applies empty valid tree { children: [] } normally in handleRemoteChange', async () => {
+    chrome.storage.local.get = vi.fn().mockResolvedValue({
+      sync_keys: ['key-a'],
+      deviceId: 'dev1',
+    })
+    fetchTree.mockResolvedValue(null)
+    await init()
+
+    applyDiff.mockClear()
+
+    await handleRemoteChange('key-a', { children: [] })
+
+    expect(applyDiff).toHaveBeenCalledWith('sync-a', [])
   })
 })

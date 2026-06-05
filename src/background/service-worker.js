@@ -43,6 +43,10 @@ export async function init() {
   return initPromise
 }
 
+function isValidTree(tree) {
+  return tree !== null && tree !== undefined && typeof tree === 'object' && Array.isArray(tree.children)
+}
+
 async function doInit() {
   const stored = await chrome.storage.local.get(['sync_keys', 'sync_key', 'deviceId'])
   deviceId = stored.deviceId || crypto.randomUUID()
@@ -72,13 +76,19 @@ async function doInit() {
     })
 
     const remoteTree = await fetchTree(supabase, key)
-    if (remoteTree) {
+    if (isValidTree(remoteTree)) {
       keyStates.get(key).isApplyingRemote = true
-      const folder = await findSyncFolder(key)
-      keyStates.get(key).folderId = folder.id
-      await applyDiff(folder.id, remoteTree.children || [])
-      keyStates.get(key).isApplyingRemote = false
+      try {
+        const folder = await findSyncFolder(key)
+        keyStates.get(key).folderId = folder.id
+        await applyDiff(folder.id, remoteTree.children || [])
+      } finally {
+        keyStates.get(key).isApplyingRemote = false
+      }
     } else {
+      if (remoteTree !== null && remoteTree !== undefined) {
+        console.error('[enlasync] Invalid remote tree for key:', key)
+      }
       const folder = await findSyncFolder(key)
       keyStates.get(key).folderId = folder.id
     }
@@ -98,12 +108,17 @@ async function debouncePush(syncKey) {
   if (state.debounceTimer) clearTimeout(state.debounceTimer)
 
   state.debounceTimer = setTimeout(async () => {
-    if (!supabase) await init()
-    const folder = await findSyncFolder(syncKey)
-    state.folderId = folder.id
-    const tree = await serializeTree(folder.id)
-    await pushTree(supabase, syncKey, deviceId, tree)
-    state.debounceTimer = null
+    try {
+      if (!supabase) await init()
+      const folder = await findSyncFolder(syncKey)
+      state.folderId = folder.id
+      const tree = await serializeTree(folder.id)
+      await pushTree(supabase, syncKey, deviceId, tree)
+    } catch (err) {
+      console.error('[enlasync] debouncePush error:', err)
+    } finally {
+      state.debounceTimer = null
+    }
   }, 200)
 }
 
@@ -164,18 +179,23 @@ export function onBookmarkChildrenReordered(id, _reorderInfo) {
   })
 }
 
-async function forceSync(syncKey) {
+export async function forceSync(syncKey) {
   const state = keyStates.get(syncKey)
   if (!state) return false
   if (!supabase) await init()
 
   const remoteTree = await fetchTree(supabase, syncKey)
-  if (remoteTree) {
+  if (isValidTree(remoteTree)) {
     state.isApplyingRemote = true
-    const folder = await findSyncFolder(syncKey)
-    state.folderId = folder.id
-    await applyDiff(folder.id, remoteTree.children || [])
-    state.isApplyingRemote = false
+    try {
+      const folder = await findSyncFolder(syncKey)
+      state.folderId = folder.id
+      await applyDiff(folder.id, remoteTree.children || [])
+    } finally {
+      state.isApplyingRemote = false
+    }
+  } else if (remoteTree !== null && remoteTree !== undefined) {
+    console.error('[enlasync] Invalid remote tree for key:', syncKey)
   }
 
   const folder = await findSyncFolder(syncKey)
@@ -193,6 +213,30 @@ async function forceSyncAll() {
   return Promise.all(results)
 }
 
+export async function handleRemoteChange(remoteKey, tree) {
+  if (!isValidTree(tree)) {
+    if (tree !== null && tree !== undefined) {
+      console.error('[enlasync] Invalid remote tree for key:', remoteKey)
+    }
+    return
+  }
+  if (keyStates.size === 0) {
+    await init()
+  }
+  if (!keyStates.has(remoteKey)) return
+  const state = keyStates.get(remoteKey)
+  state.isApplyingRemote = true
+  try {
+    const folder = await findSyncFolder(remoteKey)
+    state.folderId = folder.id
+    await applyDiff(folder.id, tree.children || [])
+  } catch (err) {
+    console.error('[enlasync] remote-change error:', err)
+  } finally {
+    state.isApplyingRemote = false
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'offscreen-ready') {
     const handleOffscreenReady = async () => {
@@ -208,25 +252,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'remote-change') {
     const { syncKey: remoteKey, tree } = message
     if (!remoteKey) return
-
-    const handleRemoteChange = async () => {
-      if (keyStates.size === 0) {
-        await init()
-      }
-      if (!keyStates.has(remoteKey)) return
-      const state = keyStates.get(remoteKey)
-      state.isApplyingRemote = true
-      try {
-        const folder = await findSyncFolder(remoteKey)
-        state.folderId = folder.id
-        await applyDiff(folder.id, tree.children || [])
-      } catch (err) {
-        console.error('[enlasync] remote-change error:', err)
-      } finally {
-        state.isApplyingRemote = false
-      }
-    }
-    handleRemoteChange()
+    handleRemoteChange(remoteKey, tree)
   }
 
   if (message.type === 'force-sync') {

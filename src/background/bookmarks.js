@@ -2,13 +2,30 @@ export const ROOT_TITLE = '[SyncBookmarks]'
 
 export async function findKeyForNode(nodeId) {
   let currentId = nodeId
+  const visited = new Set()
+  let depth = 0
+  const MAX_DEPTH = 50
 
-  while (true) {
-    const [node] = await chrome.bookmarks.get(currentId)
+  while (currentId && depth < MAX_DEPTH) {
+    if (visited.has(currentId)) return null
+    visited.add(currentId)
+    depth++
+
+    let node
+    try {
+      ;[node] = await chrome.bookmarks.get(currentId)
+    } catch {
+      return null
+    }
 
     if (!node.parentId || node.parentId === '0') return null
 
-    const [parent] = await chrome.bookmarks.get(node.parentId)
+    let parent
+    try {
+      ;[parent] = await chrome.bookmarks.get(node.parentId)
+    } catch {
+      return null
+    }
 
     if (parent.title === ROOT_TITLE && !parent.url) {
       return node.title
@@ -16,6 +33,8 @@ export async function findKeyForNode(nodeId) {
 
     currentId = node.parentId
   }
+
+  return null
 }
 
 export async function serializeTree(nodeId) {
@@ -55,7 +74,13 @@ export async function findSyncFolder(syncKey) {
 }
 
 export async function applyDiff(localParentId, remoteChildren) {
-  const localChildren = await chrome.bookmarks.getChildren(localParentId)
+  let localChildren
+  try {
+    localChildren = await chrome.bookmarks.getChildren(localParentId)
+  } catch (err) {
+    console.error('[enlasync] applyDiff getChildren error:', err)
+    return
+  }
 
   for (const remote of remoteChildren) {
     const isBookmark = !!remote.url
@@ -64,20 +89,38 @@ export async function applyDiff(localParentId, remoteChildren) {
       : localChildren.find((l) => !l.url && l.title === remote.title)
 
     if (!localMatch) {
-      const created = await chrome.bookmarks.create({
-        parentId: localParentId,
-        title: remote.title,
-        ...(isBookmark ? { url: remote.url } : {}),
-      })
+      let created
+      try {
+        created = await chrome.bookmarks.create({
+          parentId: localParentId,
+          title: remote.title,
+          ...(isBookmark ? { url: remote.url } : {}),
+        })
+      } catch (err) {
+        console.error('[enlasync] applyDiff error:', err)
+        continue
+      }
       if (!isBookmark && remote.children) {
-        await applyDiff(created.id, remote.children)
+        try {
+          await applyDiff(created.id, remote.children)
+        } catch (err) {
+          console.error('[enlasync] applyDiff error:', err)
+        }
       }
     } else {
       if (localMatch.title !== remote.title) {
-        await chrome.bookmarks.update(localMatch.id, { title: remote.title })
+        try {
+          await chrome.bookmarks.update(localMatch.id, { title: remote.title })
+        } catch (err) {
+          console.error('[enlasync] applyDiff error:', err)
+        }
       }
       if (!isBookmark && remote.children) {
-        await applyDiff(localMatch.id, remote.children)
+        try {
+          await applyDiff(localMatch.id, remote.children)
+        } catch (err) {
+          console.error('[enlasync] applyDiff error:', err)
+        }
       }
     }
   }
@@ -90,9 +133,17 @@ export async function applyDiff(localParentId, remoteChildren) {
 
     if (!inRemote) {
       if (isBookmark) {
-        await chrome.bookmarks.remove(local.id)
+        try {
+          await chrome.bookmarks.remove(local.id)
+        } catch (err) {
+          console.error('[enlasync] applyDiff error:', err)
+        }
       } else {
-        await chrome.bookmarks.removeTree(local.id)
+        try {
+          await chrome.bookmarks.removeTree(local.id)
+        } catch (err) {
+          console.error('[enlasync] applyDiff error:', err)
+        }
       }
     }
   }

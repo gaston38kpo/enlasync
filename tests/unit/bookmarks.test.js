@@ -176,6 +176,27 @@ describe('findKeyForNode', () => {
     const result = await findKeyForNode('150')
     expect(result).toBe('loose')
   })
+
+  it('returns null when chrome.bookmarks.get rejects (missing node)', async () => {
+    chrome.bookmarks.get = vi.fn().mockRejectedValue(new Error('Node not found'))
+
+    const result = await findKeyForNode('999')
+    expect(result).toBeNull()
+  })
+
+  it('returns null when a cycle is detected (parent points back to child)', async () => {
+    // Create a cycle: node A -> node B -> node A
+    const nodeA = { id: 'a', title: 'A', parentId: 'b' }
+    const nodeB = { id: 'b', title: 'B', parentId: 'a' }
+    chrome.bookmarks.get = vi.fn().mockImplementation((id) => {
+      if (id === 'a') return Promise.resolve([nodeA])
+      if (id === 'b') return Promise.resolve([nodeB])
+      return Promise.reject(new Error('Node not found'))
+    })
+
+    const result = await findKeyForNode('a')
+    expect(result).toBeNull()
+  })
 })
 
 describe('applyDiff', () => {
@@ -224,5 +245,45 @@ describe('applyDiff', () => {
       parentId: 'parent1',
       title: 'Dev',
     })
+  })
+
+  it('logs error and continues when a single chrome.bookmarks.create throws', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    chrome.bookmarks.getChildren = vi.fn().mockResolvedValue([])
+    chrome.bookmarks.create = vi.fn()
+      .mockRejectedValueOnce(new Error('create failed'))
+      .mockResolvedValueOnce({ id: 'ok1', title: 'OK', url: 'https://ok.io' })
+
+    await applyDiff('parent1', [
+      { title: 'Fail', url: 'https://fail.io' },
+      { title: 'OK', url: 'https://ok.io' },
+    ])
+
+    expect(chrome.bookmarks.create).toHaveBeenCalledTimes(2)
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[enlasync] applyDiff error:'),
+      expect.any(Error)
+    )
+    consoleSpy.mockRestore()
+  })
+
+  it('logs error and continues when a single chrome.bookmarks.remove throws', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    chrome.bookmarks.getChildren = vi.fn().mockResolvedValue([
+      { id: 'old1', title: 'Old', url: 'https://old.io' },
+      { id: 'old2', title: 'Keep', url: 'https://keep.io' },
+    ])
+    chrome.bookmarks.remove = vi.fn()
+      .mockRejectedValueOnce(new Error('remove failed'))
+      .mockResolvedValueOnce(undefined)
+
+    await applyDiff('parent1', [])
+
+    expect(chrome.bookmarks.remove).toHaveBeenCalledTimes(2)
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[enlasync] applyDiff error:'),
+      expect.any(Error)
+    )
+    consoleSpy.mockRestore()
   })
 })

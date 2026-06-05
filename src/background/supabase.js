@@ -9,7 +9,12 @@ export function createSupabaseClient() {
 }
 
 export async function pushTree(supabase, syncKey, deviceId, tree) {
-  const encrypted = await encrypt(tree, syncKey)
+  let encrypted
+  try {
+    encrypted = await encrypt(tree, syncKey)
+  } catch (err) {
+    throw new Error(`[enlasync] pushTree failed: ${err.message}`)
+  }
   const { error } = await supabase.from('bookmark_syncs').upsert({
     sync_key: syncKey,
     tree: encrypted,

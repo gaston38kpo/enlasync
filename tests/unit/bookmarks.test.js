@@ -286,4 +286,47 @@ describe('applyDiff', () => {
     )
     consoleSpy.mockRestore()
   })
+
+  it('logs error and continues when a single chrome.bookmarks.update throws', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    chrome.bookmarks.getChildren = vi.fn().mockResolvedValue([
+      { id: 'b1', title: 'MDN Web', url: 'https://mdn.io' },
+      { id: 'b2', title: 'React Old', url: 'https://react.dev' },
+    ])
+    chrome.bookmarks.update = vi.fn()
+      .mockRejectedValueOnce(new Error('update failed'))
+      .mockResolvedValueOnce(undefined)
+
+    await applyDiff('parent1', [
+      { title: 'MDN', url: 'https://mdn.io' },
+      { title: 'React', url: 'https://react.dev' },
+    ])
+
+    expect(chrome.bookmarks.update).toHaveBeenCalledTimes(2)
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[enlasync] applyDiff error:'),
+      expect.any(Error)
+    )
+    consoleSpy.mockRestore()
+  })
+
+  it('logs error and continues when a single chrome.bookmarks.removeTree throws', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    chrome.bookmarks.getChildren = vi.fn().mockResolvedValue([
+      { id: 'f1', title: 'Old Folder', children: [] },
+      { id: 'f2', title: 'Also Old', children: [] },
+    ])
+    chrome.bookmarks.removeTree = vi.fn()
+      .mockRejectedValueOnce(new Error('removeTree failed'))
+      .mockResolvedValueOnce(undefined)
+
+    await applyDiff('parent1', [])
+
+    expect(chrome.bookmarks.removeTree).toHaveBeenCalledTimes(2)
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[enlasync] applyDiff error:'),
+      expect.any(Error)
+    )
+    consoleSpy.mockRestore()
+  })
 })

@@ -53,6 +53,14 @@ describe('pushTree', () => {
     await expect(pushTree(mockSupabase, 'abc', 'dev1', tree))
       .rejects.toThrow('[enlasync] pushTree failed: upsert failed')
   })
+
+  it('throws when encrypt fails', async () => {
+    encrypt.mockRejectedValueOnce(new Error('encrypt failed'))
+
+    const tree = { title: 'T', children: [] }
+    await expect(pushTree(mockSupabase, 'abc', 'dev1', tree))
+      .rejects.toThrow('[enlasync] pushTree failed: encrypt failed')
+  })
 })
 
 describe('fetchTree', () => {

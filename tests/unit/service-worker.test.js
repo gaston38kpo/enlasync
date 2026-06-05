@@ -365,4 +365,53 @@ describe('service-worker', () => {
 
     expect(applyDiff).toHaveBeenCalledWith('sync-a', [])
   })
+
+  it('resets isApplyingRemote and logs error when applyDiff throws in handleRemoteChange', async () => {
+    chrome.storage.local.get = vi.fn().mockResolvedValue({
+      sync_keys: ['key-a'],
+      deviceId: 'dev1',
+    })
+    fetchTree.mockResolvedValue(null)
+    await init()
+
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    applyDiff.mockRejectedValueOnce(new Error('diff failed'))
+
+    await handleRemoteChange('key-a', { children: [] })
+
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[enlasync] remote-change error:'),
+      expect.any(Error)
+    )
+
+    // If isApplyingRemote were stuck true, debouncePush would bail out
+    applyDiff.mockResolvedValue(undefined)
+    findKeyForNode.mockResolvedValue('key-a')
+    onBookmarkCreated('b1', { id: 'b1', parentId: 'sync-a' })
+    await vi.advanceTimersByTimeAsync(200)
+
+    expect(pushTree).toHaveBeenCalled()
+    consoleSpy.mockRestore()
+  })
+
+  it('returns false and logs error when pushTree throws in forceSync', async () => {
+    chrome.storage.local.get = vi.fn().mockResolvedValue({
+      sync_keys: ['key-a'],
+      deviceId: 'dev1',
+    })
+    fetchTree.mockResolvedValue(null)
+    await init()
+
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    pushTree.mockRejectedValueOnce(new Error('push failed'))
+
+    const result = await forceSync('key-a')
+
+    expect(result).toBe(false)
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[enlasync] forceSync pushTree error:'),
+      expect.any(Error)
+    )
+    consoleSpy.mockRestore()
+  })
 })

@@ -201,7 +201,12 @@ export async function forceSync(syncKey) {
   const folder = await findSyncFolder(syncKey)
   state.folderId = folder.id
   const tree = await serializeTree(folder.id)
-  await pushTree(supabase, syncKey, deviceId, tree)
+  try {
+    await pushTree(supabase, syncKey, deviceId, tree)
+  } catch (err) {
+    console.error('[enlasync] forceSync pushTree error:', err)
+    return false
+  }
   return true
 }
 

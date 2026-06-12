@@ -1,5 +1,5 @@
 import { createSupabaseClient, pushTree, fetchTree } from './supabase.js'
-import { findSyncFolder, findKeyForNode, applyDiff, serializeTree } from './bookmarks.js'
+import { findSyncFolder, findKeyForNode, applyDiff, serializeTree, ensureBackupFolder, copyTreeToBackup, initializeBackupIfNeeded } from './bookmarks.js'
 
 export let isApplyingRemote = false
 let supabase = null
@@ -93,6 +93,9 @@ async function doInit() {
       keyStates.get(key).folderId = folder.id
     }
   }
+
+  // Initialize backup folder on first run
+  await initializeBackupIfNeeded()
 
   // Send full key-set config to offscreen
   chrome.runtime.sendMessage({ type: 'offscreen-config', syncKeys, deviceId })
@@ -242,6 +245,45 @@ export async function handleRemoteChange(remoteKey, tree) {
   }
 }
 
+export async function forceBackupOverride(syncKey) {
+  // Find the sync folder under [SyncBookmarks]
+  const syncFolder = await findSyncFolder(syncKey)
+  if (!syncFolder) {
+    return { success: false, error: 'Sync key folder not found' }
+  }
+
+  // Ensure backup root exists
+  const backupRoot = await ensureBackupFolder()
+  if (!backupRoot) {
+    return { success: false, error: 'Backup root folder not found' }
+  }
+
+  // Find or create corresponding folder under backup root
+  const backupChildren = await chrome.bookmarks.getChildren(backupRoot.id)
+  const existingBackup = backupChildren.find((c) => !c.url && c.title === syncKey)
+
+  if (existingBackup) {
+    // Remove existing backup folder (snapshot semantics - replace not merge)
+    try {
+      await chrome.bookmarks.removeTree(existingBackup.id)
+    } catch (err) {
+      console.error('[enlasync] forceBackupOverride removeTree error:', err)
+      return { success: false, error: 'Failed to remove existing backup' }
+    }
+  }
+
+  // Create new backup folder
+  const newBackupFolder = await chrome.bookmarks.create({
+    parentId: backupRoot.id,
+    title: syncKey,
+  })
+
+  // Copy tree to backup
+  const copied = await copyTreeToBackup(syncFolder.id, newBackupFolder.id)
+
+  return { success: true, copied }
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'offscreen-ready') {
     const handleOffscreenReady = async () => {
@@ -275,6 +317,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
     }
     handleForceSync().catch(() => sendResponse(false))
+    return true
+  }
+
+  if (message.type === 'backup-override') {
+    const handleBackupOverride = async () => {
+      if (keyStates.size === 0) {
+        await init()
+      }
+      const syncKey = message.syncKey
+      if (!syncKey) {
+        sendResponse({ success: false, error: 'Missing syncKey' })
+        return
+      }
+      const result = await forceBackupOverride(syncKey)
+      sendResponse(result)
+    }
+    handleBackupOverride().catch((err) => {
+      console.error('[enlasync] backup-override error:', err)
+      sendResponse({ success: false, error: err.message })
+    })
     return true
   }
 })

@@ -12,6 +12,7 @@ export default function App() {
   const [syncKeys, setSyncKeys] = useState([])
   const [newKey, setNewKey] = useState('')
   const [syncingKeys, setSyncingKeys] = useState(new Set())
+  const [backingUpKeys, setBackingUpKeys] = useState(new Set())
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
@@ -69,6 +70,27 @@ export default function App() {
     setSyncingKeys(new Set())
   }
 
+  const handleBackupOverride = async (key) => {
+    if (!confirm(`Esto sobrescribirá el backup de '${key}' con el estado actual. ¿Confirmar?`)) return
+    setBackingUpKeys((prev) => new Set(prev).add(key))
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'backup-override', syncKey: key })
+      if (response.success) {
+        alert(`Backup de '${key}' actualizado correctamente`)
+      } else {
+        alert(`Error al actualizar backup: ${response.error}`)
+      }
+    } catch (error) {
+      alert(`Error al actualizar backup: ${error.message}`)
+    } finally {
+      setBackingUpKeys((prev) => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
+    }
+  }
+
   if (!loaded) return null
 
   return (
@@ -85,10 +107,18 @@ export default function App() {
             <button
               className="btn-icon"
               onClick={() => handleForceSync(key)}
-              disabled={syncingKeys.has(key)}
+              disabled={syncingKeys.has(key) || backingUpKeys.has(key)}
               title="Sync now"
             >
               {syncingKeys.has(key) ? '⟳' : '↻'}
+            </button>
+            <button
+              className="btn-icon"
+              onClick={() => handleBackupOverride(key)}
+              disabled={syncingKeys.has(key) || backingUpKeys.has(key)}
+              title="Crear snapshot de backup"
+            >
+              {backingUpKeys.has(key) ? '⟳' : '💾'}
             </button>
             <button
               className="btn-icon btn-remove"

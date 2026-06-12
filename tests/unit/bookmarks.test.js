@@ -1,9 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { serializeTree, findSyncFolder, findKeyForNode, ROOT_TITLE, applyDiff } from '@/background/bookmarks.js'
+import { serializeTree, findSyncFolder, findKeyForNode, ROOT_TITLE, applyDiff, BACKUP_ROOT_TITLE, ensureBackupFolder, copyTreeToBackup, initializeBackupIfNeeded } from '@/background/bookmarks.js'
 
 describe('ROOT_TITLE', () => {
   it('exports the expected constant', () => {
     expect(ROOT_TITLE).toBe('[SyncBookmarks]')
+  })
+})
+
+describe('BACKUP_ROOT_TITLE', () => {
+  it('exports the expected constant', () => {
+    expect(BACKUP_ROOT_TITLE).toBe('[SyncBookmarksBackup]')
   })
 })
 
@@ -89,6 +95,166 @@ describe('findSyncFolder', () => {
     const result = await findSyncFolder('my-key')
 
     expect(result).toEqual(existingSub)
+    expect(chrome.bookmarks.create).not.toHaveBeenCalled()
+  })
+})
+
+describe('ensureBackupFolder', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('returns the [SyncBookmarksBackup] folder when it exists', async () => {
+    const backupFolder = { id: '200', title: '[SyncBookmarksBackup]', dateAdded: 12345, children: [] }
+    chrome.bookmarks.search = vi.fn().mockResolvedValue([backupFolder])
+
+    const result = await ensureBackupFolder()
+
+    expect(result).toEqual(backupFolder)
+    expect(chrome.bookmarks.search).toHaveBeenCalledWith({ title: '[SyncBookmarksBackup]' })
+    expect(chrome.bookmarks.create).not.toHaveBeenCalled()
+  })
+
+  it('creates the [SyncBookmarksBackup] folder when not found', async () => {
+    const backupFolder = { id: '200', title: '[SyncBookmarksBackup]', dateAdded: 12345 }
+
+    chrome.bookmarks.search = vi.fn().mockResolvedValue([])
+    chrome.bookmarks.create = vi.fn().mockResolvedValue(backupFolder)
+
+    const result = await ensureBackupFolder()
+
+    expect(chrome.bookmarks.create).toHaveBeenCalledWith({
+      parentId: '1',
+      title: '[SyncBookmarksBackup]',
+    })
+    expect(result).toEqual(backupFolder)
+  })
+
+  it('ignores bookmark results with same title (only folders)', async () => {
+    const bookmarkNode = { id: '300', title: '[SyncBookmarksBackup]', url: 'https://example.com', dateAdded: 12345 }
+    const folderNode = { id: '200', title: '[SyncBookmarksBackup]', dateAdded: 12345 }
+
+    chrome.bookmarks.search = vi.fn().mockResolvedValue([bookmarkNode, folderNode])
+
+    const result = await ensureBackupFolder()
+
+    expect(result).toEqual(folderNode)
+    expect(chrome.bookmarks.create).not.toHaveBeenCalled()
+  })
+})
+
+describe('copyTreeToBackup', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('copies a simple folder with bookmarks to backup', async () => {
+    const sourceFolder = { id: 'src1', title: 'work', children: [
+      { id: 'b1', title: 'MDN', url: 'https://mdn.io', dateAdded: 12345 },
+      { id: 'b2', title: 'React', url: 'https://react.dev', dateAdded: 12345 },
+    ]}
+    const backupParent = { id: 'backup1', title: '[SyncBookmarksBackup]' }
+
+    chrome.bookmarks.getSubTree = vi.fn().mockResolvedValue([sourceFolder])
+    chrome.bookmarks.create = vi.fn()
+      .mockResolvedValueOnce({ id: 'new-folder', title: 'work' }) // folder
+      .mockResolvedValueOnce({ id: 'new-b1', title: 'MDN', url: 'https://mdn.io' }) // bookmark 1
+      .mockResolvedValueOnce({ id: 'new-b2', title: 'React', url: 'https://react.dev' }) // bookmark 2
+
+    const count = await copyTreeToBackup('src1', 'backup1')
+
+    expect(chrome.bookmarks.getSubTree).toHaveBeenCalledWith('src1')
+    expect(chrome.bookmarks.create).toHaveBeenCalledTimes(3)
+    expect(chrome.bookmarks.create).toHaveBeenNthCalledWith(1, { parentId: 'backup1', title: 'work' })
+    expect(chrome.bookmarks.create).toHaveBeenNthCalledWith(2, { parentId: 'new-folder', title: 'MDN', url: 'https://mdn.io' })
+    expect(chrome.bookmarks.create).toHaveBeenNthCalledWith(3, { parentId: 'new-folder', title: 'React', url: 'https://react.dev' })
+    expect(count).toBe(3)
+  })
+
+  it('copies nested folder structure recursively', async () => {
+    const sourceFolder = { id: 'src1', title: 'work', children: [
+      { id: 'f1', title: 'dev', children: [
+        { id: 'b1', title: 'React', url: 'https://react.dev', dateAdded: 12345 },
+      ]},
+      { id: 'b2', title: 'MDN', url: 'https://mdn.io', dateAdded: 12345 },
+    ]}
+    const backupParent = { id: 'backup1', title: '[SyncBookmarksBackup]' }
+
+    chrome.bookmarks.getSubTree = vi.fn().mockResolvedValue([sourceFolder])
+    chrome.bookmarks.create = vi.fn()
+      .mockResolvedValueOnce({ id: 'new-work', title: 'work' }) // work folder
+      .mockResolvedValueOnce({ id: 'new-dev', title: 'dev' }) // dev subfolder
+      .mockResolvedValueOnce({ id: 'new-b1', title: 'React', url: 'https://react.dev' }) // React bookmark
+      .mockResolvedValueOnce({ id: 'new-b2', title: 'MDN', url: 'https://mdn.io' }) // MDN bookmark
+
+    const count = await copyTreeToBackup('src1', 'backup1')
+
+    expect(chrome.bookmarks.create).toHaveBeenCalledTimes(4)
+    expect(count).toBe(4)
+  })
+
+  it('returns 0 for empty folder', async () => {
+    const sourceFolder = { id: 'src1', title: 'empty', children: [] }
+    const backupParent = { id: 'backup1', title: '[SyncBookmarksBackup]' }
+
+    chrome.bookmarks.getSubTree = vi.fn().mockResolvedValue([sourceFolder])
+    chrome.bookmarks.create = vi.fn().mockResolvedValue({ id: 'new-empty', title: 'empty' })
+
+    const count = await copyTreeToBackup('src1', 'backup1')
+
+    expect(chrome.bookmarks.create).toHaveBeenCalledTimes(1) // only the folder itself
+    expect(count).toBe(1)
+  })
+})
+
+describe('initializeBackupIfNeeded', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('initializes backup on first run', async () => {
+    const rootFolder = { id: 'root1', title: '[SyncBookmarks]' }
+    const backupFolder = { id: 'backup1', title: '[SyncBookmarksBackup]' }
+    const sourceFolder = { id: 'src1', title: 'work', children: [
+      { id: 'b1', title: 'MDN', url: 'https://mdn.io', dateAdded: 12345 },
+    ]}
+
+    chrome.storage.local.get = vi.fn().mockResolvedValue({ backup_initialized: undefined })
+    chrome.bookmarks.search = vi.fn()
+      .mockResolvedValueOnce([rootFolder]) // ensureRootFolder search
+      .mockResolvedValueOnce([backupFolder]) // ensureBackupFolder search
+    chrome.bookmarks.getChildren = vi.fn().mockResolvedValue([sourceFolder]) // root children
+    chrome.bookmarks.getSubTree = vi.fn().mockResolvedValue([sourceFolder]) // serializeTree
+    chrome.bookmarks.create = vi.fn()
+      .mockResolvedValueOnce({ id: 'new-work', title: 'work' }) // folder
+      .mockResolvedValueOnce({ id: 'new-b1', title: 'MDN', url: 'https://mdn.io' }) // bookmark
+    chrome.storage.local.set = vi.fn().mockResolvedValue(undefined)
+
+    await initializeBackupIfNeeded()
+
+    expect(chrome.storage.local.get).toHaveBeenCalledWith('backup_initialized')
+    expect(chrome.storage.local.set).toHaveBeenCalledWith({ backup_initialized: true })
+    expect(chrome.bookmarks.create).toHaveBeenCalledTimes(2)
+  })
+
+  it('does nothing if backup already initialized', async () => {
+    chrome.storage.local.get = vi.fn().mockResolvedValue({ backup_initialized: true })
+
+    await initializeBackupIfNeeded()
+
+    expect(chrome.storage.local.get).toHaveBeenCalledWith('backup_initialized')
+    expect(chrome.storage.local.set).not.toHaveBeenCalled()
+    expect(chrome.bookmarks.search).not.toHaveBeenCalled()
+  })
+
+  it('does nothing if [SyncBookmarks] root does not exist', async () => {
+    chrome.storage.local.get = vi.fn().mockResolvedValue({ backup_initialized: undefined })
+    chrome.bookmarks.search = vi.fn().mockResolvedValue([]) // no root folder
+    chrome.storage.local.set = vi.fn().mockResolvedValue(undefined)
+
+    await initializeBackupIfNeeded()
+
+    expect(chrome.storage.local.set).not.toHaveBeenCalled()
     expect(chrome.bookmarks.create).not.toHaveBeenCalled()
   })
 })

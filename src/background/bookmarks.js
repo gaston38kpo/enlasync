@@ -1,4 +1,5 @@
 export const ROOT_TITLE = '[SyncBookmarks]'
+export const BACKUP_ROOT_TITLE = '[SyncBookmarksBackup]'
 
 export async function findKeyForNode(nodeId) {
   let currentId = nodeId
@@ -59,6 +60,80 @@ async function ensureRootFolder() {
   if (folder) return folder
 
   return chrome.bookmarks.create({ parentId: '1', title: ROOT_TITLE })
+}
+
+export async function ensureBackupFolder() {
+  const results = await chrome.bookmarks.search({ title: BACKUP_ROOT_TITLE })
+  const folder = results.find((r) => !r.url)
+  if (folder) return folder
+
+  return chrome.bookmarks.create({ parentId: '1', title: BACKUP_ROOT_TITLE })
+}
+
+export async function copyTreeToBackup(sourceFolderId, backupParentId) {
+  const tree = await serializeTree(sourceFolderId)
+  return copyNodeToBackup(tree, backupParentId)
+}
+
+async function copyNodeToBackup(node, parentId) {
+  let count = 0
+  if (node.url) {
+    // Bookmark node
+    await chrome.bookmarks.create({
+      parentId,
+      title: node.title,
+      url: node.url,
+    })
+    count = 1
+  } else {
+    // Folder node
+    const created = await chrome.bookmarks.create({
+      parentId,
+      title: node.title,
+    })
+    count = 1
+    if (node.children) {
+      for (const child of node.children) {
+        count += await copyNodeToBackup(child, created.id)
+      }
+    }
+  }
+  return count
+}
+
+async function findRootFolder() {
+  const results = await chrome.bookmarks.search({ title: ROOT_TITLE })
+  return results.find((r) => !r.url) || null
+}
+
+export async function initializeBackupIfNeeded() {
+  const stored = await chrome.storage.local.get('backup_initialized')
+  if (stored.backup_initialized) {
+    return
+  }
+
+  const root = await findRootFolder()
+  if (!root) {
+    console.warn('[enlasync] initializeBackupIfNeeded: [SyncBookmarks] root not found, skipping backup initialization')
+    return
+  }
+
+  const backupRoot = await ensureBackupFolder()
+  if (!backupRoot) {
+    console.warn('[enlasync] initializeBackupIfNeeded: [SyncBookmarksBackup] root not found, skipping backup initialization')
+    return
+  }
+
+  const rootChildren = await chrome.bookmarks.getChildren(root.id)
+  let totalCount = 0
+  for (const child of rootChildren) {
+    if (!child.url) {
+      totalCount += await copyTreeToBackup(child.id, backupRoot.id)
+    }
+  }
+
+  await chrome.storage.local.set({ backup_initialized: true })
+  console.log(`[enlasync] Backup initialized: ${totalCount} items copied to [SyncBookmarksBackup]`)
 }
 
 export async function findSyncFolder(syncKey) {

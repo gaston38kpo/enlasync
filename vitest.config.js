@@ -12,6 +12,6 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['tests/setup/chrome-mock.js'],
-    include: ['tests/**/*.test.js'],
+    include: ['tests/**/*.test.{js,jsx}'],
   },
 })

@@ -27,3 +27,5 @@ dist-ssr
 # Local Pi runtime state
 .atl/
 /coverage
+/.pi
+/.opencode

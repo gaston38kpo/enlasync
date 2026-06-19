@@ -84,7 +84,7 @@ export async function copyChildrenToBackup(sourceFolderId, backupParentId) {
     const serialized = serializeNode(subtree)
     count += await copyNodeToBackup(serialized, backupParentId)
   }
-  return count
+  return count  
 }
 
 async function copyNodeToBackup(node, parentId) {

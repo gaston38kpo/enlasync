@@ -14,22 +14,34 @@ This template helps you quickly start developing Chrome extensions with React an
 1. Install dependencies:
 
 ```bash
-npm install
+pnpm install
 ```
 
-2. Start development server:
+2. Build the extension:
 
 ```bash
-npm run dev
+pnpm run build
 ```
 
-3. Open Chrome and navigate to `chrome://extensions/`, enable "Developer mode", and load the unpacked extension from the `dist` directory.
+3. Load the unpacked extension in Chrome:
+   - Open Chrome and navigate to `chrome://extensions/`
+   - Enable "Developer mode" (toggle in top-right corner)
+   - Click "Load unpacked" button
+   - Select the `dist` directory from this project
+   - The extension should now appear in your extensions list
 
-4. Build for production:
+4. Configure the extension:
+   - Click the extension icon in Chrome toolbar
+   - Enter your Supabase credentials and sync key
+   - Start syncing bookmarks!
+
+5. Development mode (optional):
 
 ```bash
-npm run build
+pnpm run dev
 ```
+
+This starts a development server with hot-reload support.
 
 ## Project Structure
 

@@ -75,6 +75,18 @@ export async function copyTreeToBackup(sourceFolderId, backupParentId) {
   return copyNodeToBackup(tree, backupParentId)
 }
 
+export async function copyChildrenToBackup(sourceFolderId, backupParentId) {
+  const children = await chrome.bookmarks.getChildren(sourceFolderId)
+  let count = 0
+  for (const child of children) {
+    // Use getSubTree to get the complete subtree for each child
+    const [subtree] = await chrome.bookmarks.getSubTree(child.id)
+    const serialized = serializeNode(subtree)
+    count += await copyNodeToBackup(serialized, backupParentId)
+  }
+  return count
+}
+
 async function copyNodeToBackup(node, parentId) {
   let count = 0
   if (node.url) {

@@ -1,5 +1,5 @@
 import { createSupabaseClient, pushTree, fetchTree } from './supabase.js'
-import { findSyncFolder, findKeyForNode, applyDiff, serializeTree, ensureBackupFolder, copyTreeToBackup, initializeBackupIfNeeded } from './bookmarks.js'
+import { findSyncFolder, findKeyForNode, applyDiff, serializeTree, ensureBackupFolder, copyTreeToBackup, copyChildrenToBackup, initializeBackupIfNeeded } from './bookmarks.js'
 
 export let isApplyingRemote = false
 let supabase = null
@@ -278,8 +278,8 @@ export async function forceBackupOverride(syncKey) {
     title: syncKey,
   })
 
-  // Copy tree to backup
-  const copied = await copyTreeToBackup(syncFolder.id, newBackupFolder.id)
+  // Copy children to backup (avoid duplicating the root folder)
+  const copied = await copyChildrenToBackup(syncFolder.id, newBackupFolder.id)
 
   return { success: true, copied }
 }

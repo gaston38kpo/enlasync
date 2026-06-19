@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { serializeTree, findSyncFolder, findKeyForNode, ROOT_TITLE, applyDiff, BACKUP_ROOT_TITLE, ensureBackupFolder, copyTreeToBackup, initializeBackupIfNeeded } from '@/background/bookmarks.js'
+import { serializeTree, findSyncFolder, findKeyForNode, ROOT_TITLE, applyDiff, BACKUP_ROOT_TITLE, ensureBackupFolder, copyTreeToBackup, copyChildrenToBackup, initializeBackupIfNeeded } from '@/background/bookmarks.js'
 
 describe('ROOT_TITLE', () => {
   it('exports the expected constant', () => {
@@ -204,6 +204,146 @@ describe('copyTreeToBackup', () => {
 
     expect(chrome.bookmarks.create).toHaveBeenCalledTimes(1) // only the folder itself
     expect(count).toBe(1)
+  })
+})
+
+describe('copyChildrenToBackup', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('copies children without duplicating root folder', async () => {
+    // Simula la estructura: [SyncBookmarks]>Gasty>miCarpeta>marcador
+    const sourceFolder = { id: 'gasty', title: 'Gasty' }
+    const children = [
+      { 
+        id: 'carpeta1', 
+        title: 'miCarpeta',
+        dateAdded: 12345
+      }
+    ]
+    const backupParent = { id: 'backup-gasty', title: 'Gasty' }
+
+    chrome.bookmarks.getChildren = vi.fn().mockResolvedValue(children)
+    chrome.bookmarks.getSubTree = vi.fn().mockResolvedValue([
+      { 
+        id: 'carpeta1', 
+        title: 'miCarpeta', 
+        children: [
+          { id: 'b1', title: 'marcador', url: 'https://example.com', dateAdded: 12345 }
+        ]
+      }
+    ])
+    chrome.bookmarks.create = vi.fn()
+      .mockResolvedValueOnce({ id: 'new-carpeta', title: 'miCarpeta' }) // miCarpeta folder
+      .mockResolvedValueOnce({ id: 'new-b1', title: 'marcador', url: 'https://example.com' }) // bookmark
+
+    const count = await copyChildrenToBackup('gasty', 'backup-gasty')
+
+    // Verifica que solo se copiaron los hijos, no la carpeta raíz "Gasty"
+    expect(chrome.bookmarks.getChildren).toHaveBeenCalledWith('gasty')
+    expect(chrome.bookmarks.getSubTree).toHaveBeenCalledWith('carpeta1')
+    expect(chrome.bookmarks.create).toHaveBeenCalledTimes(2)
+    expect(chrome.bookmarks.create).toHaveBeenNthCalledWith(1, { parentId: 'backup-gasty', title: 'miCarpeta' })
+    expect(chrome.bookmarks.create).toHaveBeenNthCalledWith(2, { parentId: 'new-carpeta', title: 'marcador', url: 'https://example.com' })
+    expect(count).toBe(2)
+  })
+
+  it('copies multiple top-level children correctly', async () => {
+    const sourceFolder = { id: 'src1', title: 'work' }
+    const children = [
+      { id: 'f1', title: 'dev', dateAdded: 12345 },
+      { id: 'b2', title: 'MDN', url: 'https://mdn.io', dateAdded: 12345 },
+    ]
+    const backupParent = { id: 'backup1', title: '[SyncBookmarksBackup]' }
+
+    chrome.bookmarks.getChildren = vi.fn().mockResolvedValue(children)
+    chrome.bookmarks.getSubTree = vi.fn()
+      .mockResolvedValueOnce([
+        { 
+          id: 'f1', 
+          title: 'dev', 
+          children: [
+            { id: 'b1', title: 'React', url: 'https://react.dev', dateAdded: 12345 },
+          ]
+        }
+      ])
+      .mockResolvedValueOnce([
+        { id: 'b2', title: 'MDN', url: 'https://mdn.io', dateAdded: 12345 }
+      ])
+    chrome.bookmarks.create = vi.fn()
+      .mockResolvedValueOnce({ id: 'new-dev', title: 'dev' }) // dev subfolder
+      .mockResolvedValueOnce({ id: 'new-b1', title: 'React', url: 'https://react.dev' }) // React bookmark
+      .mockResolvedValueOnce({ id: 'new-b2', title: 'MDN', url: 'https://mdn.io' }) // MDN bookmark
+
+    const count = await copyChildrenToBackup('src1', 'backup1')
+
+    expect(chrome.bookmarks.create).toHaveBeenCalledTimes(3)
+    expect(count).toBe(3)
+  })
+
+  it('returns 0 for empty folder with no children', async () => {
+    const sourceFolder = { id: 'src1', title: 'empty' }
+
+    chrome.bookmarks.getChildren = vi.fn().mockResolvedValue([])
+    chrome.bookmarks.create = vi.fn()
+
+    const count = await copyChildrenToBackup('src1', 'backup1')
+
+    expect(chrome.bookmarks.create).not.toHaveBeenCalled()
+    expect(count).toBe(0)
+  })
+
+  it('copies deep nested tree structure completely', async () => {
+    // Simula estructura profunda: CarpetaA > CarpetaB > CarpetaC > marcador
+    const sourceFolder = { id: 'root', title: 'SyncKey' }
+    const children = [
+      { id: 'folderA', title: 'CarpetaA', dateAdded: 12345 }
+    ]
+    const backupParent = { id: 'backup-root', title: 'SyncKey' }
+
+    chrome.bookmarks.getChildren = vi.fn().mockResolvedValue(children)
+    
+    // Mock getSubTree para obtener el árbol completo de CarpetaA
+    chrome.bookmarks.getSubTree = vi.fn().mockResolvedValue([
+      { 
+        id: 'folderA', 
+        title: 'CarpetaA',
+        children: [
+          { 
+            id: 'folderB', 
+            title: 'CarpetaB',
+            children: [
+              {
+                id: 'folderC',
+                title: 'CarpetaC',
+                children: [
+                  { id: 'bookmark1', title: 'miMarcador', url: 'https://example.com', dateAdded: 12345 }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ])
+    
+    chrome.bookmarks.create = vi.fn()
+      .mockResolvedValueOnce({ id: 'new-folderA', title: 'CarpetaA' })
+      .mockResolvedValueOnce({ id: 'new-folderB', title: 'CarpetaB' })
+      .mockResolvedValueOnce({ id: 'new-folderC', title: 'CarpetaC' })
+      .mockResolvedValueOnce({ id: 'new-bookmark1', title: 'miMarcador', url: 'https://example.com' })
+
+    const count = await copyChildrenToBackup('root', 'backup-root')
+
+    // Verifica que se copiaron todos los nodos del árbol (4 nodos: 3 carpetas + 1 marcador)
+    expect(chrome.bookmarks.create).toHaveBeenCalledTimes(4)
+    expect(count).toBe(4)
+    
+    // Verifica la jerarquía correcta
+    expect(chrome.bookmarks.create).toHaveBeenNthCalledWith(1, { parentId: 'backup-root', title: 'CarpetaA' })
+    expect(chrome.bookmarks.create).toHaveBeenNthCalledWith(2, { parentId: 'new-folderA', title: 'CarpetaB' })
+    expect(chrome.bookmarks.create).toHaveBeenNthCalledWith(3, { parentId: 'new-folderB', title: 'CarpetaC' })
+    expect(chrome.bookmarks.create).toHaveBeenNthCalledWith(4, { parentId: 'new-folderC', title: 'miMarcador', url: 'https://example.com' })
   })
 })
 
